@@ -1,0 +1,11 @@
+# build artifacts
+/lucien
+/bin/
+/dist/
+
+# local config holding real tokens
+config.local.toml
+
+# test scratch
+*.test
+coverage.out
