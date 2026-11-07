@@ -153,7 +153,10 @@ func TestSystemAudioPipelineEndToEnd(t *testing.T) {
 		t.Fatalf("stub requests: %v", reqs)
 	}
 	fields := reqs[0]["fields"].(map[string]any)
-	if fields["language"] != "auto" || fields["response_format"] != "json" {
+	if _, ok := fields["language"]; ok {
+		t.Fatalf(`language must be omitted for the "auto" default: %v`, fields)
+	}
+	if fields["response_format"] != "json" {
 		t.Fatalf("multipart fields: %v", fields)
 	}
 

@@ -182,7 +182,13 @@ func TestTranscribeHappyPath(t *testing.T) {
 		t.Fatalf("filename = %v", reqs[0]["filename"])
 	}
 	fields, _ := reqs[0]["fields"].(map[string]any)
-	if fields["language"] != "auto" || fields["response_format"] != "json" {
+	// DESIGN's "auto" means auto-detect; OpenAI-compatible servers encode
+	// that as an ABSENT language field (a literal "auto" gets a 500
+	// "Unsupported language", verified against the real endpoint).
+	if _, ok := fields["language"]; ok {
+		t.Fatalf(`language must be omitted for "auto": %v`, fields)
+	}
+	if fields["response_format"] != "json" {
 		t.Fatalf("multipart fields = %v", fields)
 	}
 }
@@ -202,6 +208,21 @@ func TestTranscribeEmptyLanguageOmitsField(t *testing.T) {
 	}
 	if fields["response_format"] != "json" {
 		t.Fatalf("response_format must always be sent: %v", fields)
+	}
+}
+
+func TestTranscribeExplicitLanguageSent(t *testing.T) {
+	e := newEnv(t, "ok")
+	e.cfg.WhisperLanguage = "en"
+	e.w = worker.New(e.store, e.idx, e.cfg, nil)
+	e.createAudio(t, "clip")
+	if ran := e.w.Pass(context.Background()); ran != 1 {
+		t.Fatalf("pass ran %d", ran)
+	}
+	reqs := stubRequests(t, e.stub)
+	fields, _ := reqs[0]["fields"].(map[string]any)
+	if fields["language"] != "en" {
+		t.Fatalf("an explicit language must be sent verbatim: %v", fields)
 	}
 }
 

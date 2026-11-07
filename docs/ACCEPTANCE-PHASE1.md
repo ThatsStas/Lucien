@@ -19,7 +19,7 @@ Method per `IMPLEMENTATION-FRAMEWORK.md` 8; card script per
 | Index | `6b90778` | SQLite summaries/filter tables, queries, DiscoverDue, reindex |
 | API | `de8704b` | bearer auth, notes CRUD + append, admin reindex, health |
 | Worker | `25d743a` | chain runner, whisper adapter, backoff, boot recovery, wake loop |
-| Observability | this commit | lifecycle INFO logs (claimed/committed/retry/re-armed/boot) |
+| Observability | `65ddbd8` | lifecycle INFO logs (claimed/committed/retry/re-armed/boot) |
 
 ## 2. Verification
 
@@ -134,9 +134,13 @@ and demonstrated live on the real binary as above.
     signals. Documented in `config.example.toml`.
 19. **Boot `ResetRunning`**: `running → pending` without commit and
     without bumping `modified` (no content change); returns re-arm count.
-20. **Language**: `whisper_language = "auto"` sends `language=auto`;
-    `""` omits the field. (Real-whisper verification of `auto` remains
-    open — blocked shell policy; stub asserts the multipart contract.)
+20. **`whisper_language = "auto"`**: the DESIGN 12 default must not be
+    sent literally — the real OpenAI-compatible endpoint answers
+    `500 "Unsupported language: auto"`. "auto" (like "") is therefore
+    encoded as an **absent** field (the OpenAI auto-detect convention);
+    explicit values are sent verbatim. Found by the live smoke, covered
+    by three seam tests, verified end-to-end against the real server
+    (fixture transcribed: "The quick brown fox jumps over the lazy dog.").
 
 ## 5. Deliberately not built (card §Explicitly not in this phase)
 

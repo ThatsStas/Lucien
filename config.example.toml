@@ -15,7 +15,9 @@ index_path = "/home/bloodsurfer/.lucien/index.sqlite"
 # Whisper endpoint: OpenAI-compatible multipart transcription
 # (Whisper Turbo API: POST /v1/audio/transcriptions).
 whisper_url = "http://10.0.0.93:9001/v1/audio/transcriptions"
-# "auto", "en", "ru", ... ; "" omits the parameter.
+# "auto" (default) and "" both omit the parameter, which is how
+# OpenAI-compatible servers request auto-detect; other values ("en", "ru")
+# are sent verbatim.
 whisper_language = "auto"
 
 # Per-client bearer tokens. token_sha256 = sha256 hex of the raw token;

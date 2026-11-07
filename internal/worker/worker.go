@@ -351,7 +351,7 @@ func (w *Worker) stepTranscribe(ctx context.Context, n *notestore.Note) error {
 // 5xx are retryable plain errors; 4xx wraps ErrPermanent.
 type whisperClient struct {
 	url      string
-	language string // "auto" per DESIGN default; "" omits the field
+	language string // DESIGN default "auto" and "" both omit the field: OpenAI-compatible servers auto-detect only when language is absent (a literal "auto" is rejected, e.g. HTTP 500 "Unsupported language")
 	client   *http.Client
 }
 
@@ -365,7 +365,7 @@ func (c *whisperClient) Transcribe(ctx context.Context, filename string, data []
 	if _, err := fw.Write(data); err != nil {
 		return "", err
 	}
-	if c.language != "" {
+	if c.language != "" && c.language != "auto" {
 		if err := mw.WriteField("language", c.language); err != nil {
 			return "", err
 		}
