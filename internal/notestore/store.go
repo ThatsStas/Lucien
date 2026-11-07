@@ -431,6 +431,7 @@ func (s *Store) Claim(id string) (*Note, error) {
 	if err := s.persist(n, nil, "", false, false); err != nil {
 		return nil, err
 	}
+	s.log.Info("note claimed", "id", n.ID, "step", n.Processing.Step)
 	return n, nil
 }
 
@@ -493,6 +494,13 @@ func (s *Store) FailStep(id, step string, retryCount int, nextRetry *time.Time, 
 	}
 	if err := s.persist(n, nil, "", false, true); err != nil {
 		return nil, err
+	}
+	if n.Processing.Status == StatusPending {
+		s.log.Info("step failed, retry scheduled", "id", n.ID, "step", step,
+			"attempt", retryCount, "next_retry_at", n.Processing.NextRetryAt, "err", msg)
+	} else {
+		s.log.Warn("step failed permanently", "id", n.ID, "step", step,
+			"attempts", retryCount, "err", msg)
 	}
 	return n, nil
 }
@@ -599,6 +607,7 @@ func (s *Store) ResetToPending(id string) (*Note, error) {
 	if err := s.persist(n, nil, "", false, false); err != nil {
 		return nil, err
 	}
+	s.log.Info("note re-armed after boot", "id", n.ID, "step", n.Processing.Step)
 	return n, nil
 }
 
@@ -661,6 +670,7 @@ func (s *Store) persist(n *Note, paths []string, msg string, commit, wake bool) 
 		if err := s.vcs.CommitPaths(paths, msg); err != nil {
 			return err
 		}
+		s.log.Info("note committed", "id", n.ID, "commit", msg)
 	}
 	if wake && s.onMutation != nil {
 		s.onMutation()

@@ -114,6 +114,7 @@ func (w *Worker) ResetRunning() int {
 		w.log.Warn("worker: boot scan skipped unreadable notes", "err", err)
 	}
 	reset := 0
+	swept := 0
 	for _, n := range notes {
 		if n.Processing.Status == notestore.StatusRunning {
 			if _, err := w.store.ResetToPending(n.ID); err != nil {
@@ -135,9 +136,14 @@ func (w *Worker) ResetRunning() int {
 			if len(bufs) > 0 {
 				if err := w.store.DeleteBuffers(n.ID, bufs, "transcribe "+n.ID); err != nil {
 					w.log.Warn("worker: buffer sweep failed", "id", n.ID, "err", err)
+				} else {
+					swept += len(bufs)
 				}
 			}
 		}
+	}
+	if reset > 0 || swept > 0 {
+		w.log.Info("worker: boot recovery", "re_armed", reset, "stray_buffers_swept", swept)
 	}
 	return reset
 }
