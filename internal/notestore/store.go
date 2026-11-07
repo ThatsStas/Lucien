@@ -490,6 +490,34 @@ func (s *Store) FailStep(id, step string, retryCount int, nextRetry *time.Time, 
 	return n, nil
 }
 
+// --- Bulk read (reindex support) ----------------------------------------------
+
+// All reads every top-level note file, oldest first (ULID names sort by
+// creation). Corrupt or unreadable files are skipped and reported as a
+// joined error so an admin reindex still rebuilds the healthy notes.
+// .trash/ and .tmp-* are not notes and are never listed.
+func (s *Store) All() ([]*Note, error) {
+	entries, err := os.ReadDir(s.dir)
+	if err != nil {
+		return nil, err
+	}
+	var notes []*Note
+	var errs []error
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") || strings.HasPrefix(e.Name(), ".") {
+			continue
+		}
+		id := strings.TrimSuffix(e.Name(), ".json")
+		n, err := s.Read(id)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", e.Name(), err))
+			continue
+		}
+		notes = append(notes, n)
+	}
+	return notes, errors.Join(errs...)
+}
+
 // --- internals --------------------------------------------------------------
 
 func (s *Store) newID() string {
