@@ -65,6 +65,43 @@ func newServer(t *testing.T, s *Server) *httptest.Server {
 	return ts
 }
 
+func TestStubWhisper_RuntimeModeSwitch(t *testing.T) {
+	s := &Server{Mode: "ok", Transcript: "stub transcript"}
+	ts := newServer(t, s)
+
+	setMode := func(body string) int {
+		t.Helper()
+		resp, err := http.Post(ts.URL+"/__mode", "application/json", strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		return resp.StatusCode
+	}
+
+	if code, body := postAudio(t, ts.URL+"/v1/audio/transcriptions", nil); code != 200 || body["text"] != "stub transcript" {
+		t.Fatalf("baseline ok: code=%d body=%v", code, body)
+	}
+	if code := setMode(`{"mode":"error500"}`); code != 200 {
+		t.Fatalf("switch to error500: code=%d", code)
+	}
+	if code, _ := postAudio(t, ts.URL+"/v1/audio/transcriptions", nil); code != 500 {
+		t.Fatalf("after switch: want 500, got %d", code)
+	}
+	if code := setMode(`{"mode":"bogus"}`); code != 400 {
+		t.Fatalf("bogus mode: want 400, got %d", code)
+	}
+	if code, _ := postAudio(t, ts.URL+"/v1/audio/transcriptions", nil); code != 500 {
+		t.Fatalf("rejected switch must not change mode: want 500, got %d", code)
+	}
+	if code := setMode(`{"mode":"ok"}`); code != 200 {
+		t.Fatalf("switch back: code=%d", code)
+	}
+	if code, body := postAudio(t, ts.URL+"/v1/audio/transcriptions", nil); code != 200 || body["text"] != "stub transcript" {
+		t.Fatalf("after switch back: code=%d body=%v", code, body)
+	}
+}
+
 func TestStubWhisper_OKRecordsRequest(t *testing.T) {
 	s := &Server{Mode: "ok", Transcript: "hello world"}
 	ts := newServer(t, s)

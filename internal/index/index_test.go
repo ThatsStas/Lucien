@@ -495,3 +495,42 @@ func TestStoreAll(t *testing.T) {
 		t.Fatalf("healthy notes lost: %+v", notes)
 	}
 }
+
+func TestEarliestRetry(t *testing.T) {
+	x := openIndex(t)
+	upsert := func(id, step, status string, retryOff int) {
+		n := mkNote(id, 0)
+		n.Processing = notestore.Processing{Step: step, Status: status}
+		if retryOff != 0 {
+			n.Processing.NextRetryAt = ts(retryOff)
+		}
+		if err := x.Upsert(n); err != nil {
+			t.Fatal(err)
+		}
+	}
+	upsert("SOON", notestore.StepTranscribe, notestore.StatusPending, 5)
+	upsert("LATE", notestore.StepTranscribe, notestore.StatusPending, 60)
+	upsert("PASTDUE", notestore.StepTranscribe, notestore.StatusPending, -5) // due: next pass handles it
+	upsert("NULLR", notestore.StepTranscribe, notestore.StatusPending, 0)    // no timer to schedule
+	upsert("RUNT", notestore.StepTranscribe, notestore.StatusRunning, 10)    // not pending: no timer
+	upsert("FAILT", notestore.StepTranscribe, notestore.StatusFailed, 10)
+	upsert("RESTT", notestore.StepNone, notestore.StatusPending, 10)         // rest: never discovered
+
+	got, err := x.EarliestRetry(base)
+	if err != nil {
+		t.Fatalf("earliest: %v", err)
+	}
+	if got == nil || !got.Equal(base.Add(5*time.Second)) {
+		t.Fatalf("want base+5s, got %v", got)
+	}
+
+	// With the pending timer notes gone no wakeup remains: NULLR has no
+	// timer, RUNT/FAILT are not pending, RESTT is the rest state.
+	x.Remove("SOON")
+	x.Remove("LATE")
+	x.Remove("PASTDUE")
+	got, err = x.EarliestRetry(base)
+	if err != nil || got != nil {
+		t.Fatalf("want nil, got %v (%v)", got, err)
+	}
+}

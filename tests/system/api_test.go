@@ -30,13 +30,21 @@ type backend struct {
 	url      string
 	notesDir string
 	dir      string
+	cfgPath  string
+	bin      string
 	token    string
 }
 
 // startBackend writes a config with a temp notes_dir (real git) and an
 // index_path outside it, boots the real binary and waits for its port.
-// extra are appended TOML lines (e.g. max_upload_mb overrides).
+// extra are appended TOML lines (e.g. max_upload_mb overrides). The
+// whisper endpoint is a dead port: API tests never exercise the worker.
 func startBackend(t *testing.T, extra ...string) *backend {
+	t.Helper()
+	return startBackendWhisper(t, "http://127.0.0.1:9/v1/audio/transcriptions", extra...)
+}
+
+func startBackendWhisper(t *testing.T, whisperURL string, extra ...string) *backend {
 	t.Helper()
 	dir := t.TempDir()
 	notesDir := filepath.Join(dir, "notes")
@@ -47,21 +55,32 @@ func startBackend(t *testing.T, extra ...string) *backend {
 port = 0
 notes_dir = %q
 index_path = %q
-whisper_url = "http://127.0.0.1:9/v1/audio/transcriptions"
+whisper_url = %q
 %s
 
 [[clients]]
 name = "test"
 token_sha256 = %q
-`, notesDir, filepath.Join(indexDir, "index.sqlite"), strings.Join(extra, "\n"), hex.EncodeToString(sum[:]))
+`, notesDir, filepath.Join(indexDir, "index.sqlite"), whisperURL, strings.Join(extra, "\n"), hex.EncodeToString(sum[:]))
 	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	bin := testutil.BuildBinary(t, "lucien/cmd/lucien")
 	proc := testutil.Start(t, bin, "-config", cfgPath)
-	b := &backend{t: t, proc: proc, url: proc.BaseURL(), notesDir: notesDir, dir: dir, token: testToken}
+	b := &backend{t: t, proc: proc, url: proc.BaseURL(), notesDir: notesDir, dir: dir,
+		cfgPath: cfgPath, bin: bin, token: testToken}
 	testutil.WaitFor(t, b.url+"/v1/health", 10*time.Second, "backend health")
 	return b
+}
+
+// restart kills the running process and boots a fresh one from the same
+// config on a new ephemeral port (boot-recovery tests, DESIGN 6 rule 3).
+func (b *backend) restart() {
+	b.t.Helper()
+	b.proc.Stop()
+	b.proc = testutil.Start(b.t, b.bin, "-config", b.cfgPath)
+	b.url = b.proc.BaseURL()
+	testutil.WaitFor(b.t, b.url+"/v1/health", 10*time.Second, "backend health after restart")
 }
 
 func (b *backend) do(method, path string, body io.Reader, contentType string, auth bool) (int, []byte) {

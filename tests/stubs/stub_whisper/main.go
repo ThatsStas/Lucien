@@ -61,6 +61,18 @@ type Server struct {
 	all []*Request // every request ever received, mirrored to RecordFile
 }
 
+var validModes = map[string]bool{
+	"ok": true, "error500": true, "error422": true, "refuse": true, "delay": true,
+}
+
+// mode returns the current behavior mode (mutex-protected; the mode can be
+// switched at runtime by tests via POST /__mode).
+func (s *Server) mode() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.Mode
+}
+
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case r.Method == http.MethodGet && (r.URL.Path == "/v1/audio/health" || r.URL.Path == "/v1/audio/transcriptions/health"):
@@ -70,6 +82,18 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		all := s.all
 		s.mu.Unlock()
 		writeJSON(w, 200, all)
+	case r.Method == http.MethodPost && r.URL.Path == "/__mode":
+		var in struct {
+			Mode string `json:"mode"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil || !validModes[in.Mode] {
+			writeJSON(w, 400, map[string]string{"detail": "mode must be ok|error500|error422|refuse|delay"})
+			return
+		}
+		s.mu.Lock()
+		s.Mode = in.Mode
+		s.mu.Unlock()
+		writeJSON(w, 200, map[string]string{"mode": in.Mode})
 	case r.Method == http.MethodPost && r.URL.Path == "/v1/audio/transcriptions":
 		s.transcribe(w, r)
 	default:
@@ -78,7 +102,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) transcribe(w http.ResponseWriter, r *http.Request) {
-	if s.Mode == "refuse" {
+	mode := s.mode()
+	if mode == "refuse" {
 		if hj, ok := w.(http.Hijacker); ok {
 			conn, _, err := hj.Hijack()
 			if err == nil {
@@ -121,7 +146,7 @@ func (s *Server) transcribe(w http.ResponseWriter, r *http.Request) {
 	}
 	s.record(rec)
 
-	switch s.Mode {
+	switch mode {
 	case "error500":
 		writeJSON(w, 500, map[string]string{"detail": "stub internal error"})
 	case "error422":

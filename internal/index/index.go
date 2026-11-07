@@ -447,6 +447,29 @@ func (x *Index) DiscoverDue(now time.Time, limit int) ([]string, error) {
 	return ids, rows.Err()
 }
 
+// EarliestRetry returns the soonest future next_retry_at among pending,
+// discoverable notes (next wake-up deadline for the worker's sleep,
+// DESIGN.md 6 rule 2), or nil when no pending note carries a timer.
+func (x *Index) EarliestRetry(now time.Time) (*time.Time, error) {
+	var raw string
+	err := x.db.QueryRow(`SELECT next_retry_at FROM notes
+		WHERE processing_status = 'pending' AND next_retry_at IS NOT NULL
+		  AND next_retry_at > ? AND processing_step != 'none'
+		ORDER BY next_retry_at LIMIT 1`, fmtTime(now.UTC())).Scan(&raw)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	t, err := time.Parse(timeFmt, raw)
+	if err != nil {
+		return nil, fmt.Errorf("index: bad next_retry_at %q: %w", raw, err)
+	}
+	u := t.UTC()
+	return &u, nil
+}
+
 // --- helpers -----------------------------------------------------------------
 
 func fmtTime(t time.Time) string { return t.UTC().Format(timeFmt) }

@@ -5,8 +5,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -658,5 +660,154 @@ func TestAppendBlockedDuringTranscription(t *testing.T) {
 	}
 	if _, err := s.AppendText(n.ID, "late thought"); err != nil {
 		t.Fatalf("append after transcribe: %v", err)
+	}
+}
+
+// --- worker support: buffers listing/reading/deleting, boot reset ----------
+
+func TestAudioBuffers_NumericOrderPerNote(t *testing.T) {
+	s, _, _, _ := testStore(t)
+	a, err := s.Create(CreateRequest{SourceKind: "audio", Audio: strings.NewReader("A1"), AudioExt: "m4a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 2; i <= 12; i++ {
+		// Realistic multi-buffer accumulation: the worker consumes the
+		// transcribe step, then a fresh audio append re-arms it.
+		if _, err := s.Claim(a.ID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.CompleteStep(a.ID, StepTranscribe, func(*Note) {}, "transcribe "+a.ID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.AppendAudio(a.ID, strings.NewReader("A"), "m4a"); err != nil {
+			t.Fatalf("append %d: %v", i, err)
+		}
+	}
+	// A second note's buffers must never leak into the listing.
+	if _, err := s.Create(CreateRequest{SourceKind: "audio", Audio: strings.NewReader("B"), AudioExt: "m4a"}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.AudioBuffers(a.ID)
+	if err != nil {
+		t.Fatalf("audio buffers: %v", err)
+	}
+	want := make([]string, 12)
+	for i := range want {
+		want[i] = fmt.Sprintf("%s.%d.m4a", a.ID, i+1) // numeric, not lexicographic
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("buffers\n got %v\nwant %v", got, want)
+	}
+}
+
+func TestReadBuffer_BelongsToID(t *testing.T) {
+	s, _, _, _ := testStore(t)
+	a, err := s.Create(CreateRequest{SourceKind: "audio", Audio: strings.NewReader("A1"), AudioExt: "m4a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := s.Create(CreateRequest{SourceKind: "audio", Audio: strings.NewReader("B1"), AudioExt: "m4a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := s.ReadBuffer(a.ID, a.ID+".1.m4a")
+	if err != nil || string(data) != "A1" {
+		t.Fatalf("read own buffer: %q, %v", data, err)
+	}
+	if _, err := s.ReadBuffer(a.ID, b.ID+".1.m4a"); err == nil {
+		t.Fatal("reading another note's buffer must fail")
+	}
+	if _, err := s.ReadBuffer(a.ID, a.ID+".json"); err == nil {
+		t.Fatal("reading the note file as a buffer must fail")
+	}
+	if _, err := s.ReadBuffer(a.ID, a.ID+".1.exe"); err == nil {
+		t.Fatal("unsupported extension must fail")
+	}
+}
+
+func TestDeleteBuffers_RecordsDeletionCommit(t *testing.T) {
+	s, vcs, _, _ := testStore(t)
+	a, err := s.Create(CreateRequest{SourceKind: "audio", Audio: strings.NewReader("A1"), AudioExt: "m4a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Claim(a.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CompleteStep(a.ID, StepTranscribe, func(*Note) {}, "transcribe "+a.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AppendAudio(a.ID, strings.NewReader("A2"), "m4a"); err != nil {
+		t.Fatal(err)
+	}
+	names, err := s.AudioBuffers(a.ID)
+	if err != nil || len(names) != 2 {
+		t.Fatalf("precondition: %v %v", names, err)
+	}
+	before := len(vcs.Commits)
+
+	if err := s.DeleteBuffers(a.ID, names, "transcribe "+a.ID); err != nil {
+		t.Fatalf("delete buffers: %v", err)
+	}
+	for _, nm := range names {
+		if _, err := os.Stat(filepath.Join(s.dir, nm)); !os.IsNotExist(err) {
+			t.Fatalf("buffer %s still present: %v", nm, err)
+		}
+	}
+	if len(vcs.Commits) != before+1 {
+		t.Fatalf("want one commit, got %+v", vcs.Commits)
+	}
+	c := vcs.Commits[before]
+	if !reflect.DeepEqual(c.Paths, names) || c.Message != "transcribe "+a.ID {
+		t.Fatalf("commit = %+v", c)
+	}
+
+	// Idempotent re-delete (crash between remove and commit) and empty lists.
+	if err := s.DeleteBuffers(a.ID, names, "transcribe "+a.ID); err != nil {
+		t.Fatalf("re-delete: %v", err)
+	}
+	if err := s.DeleteBuffers(a.ID, nil, "transcribe "+a.ID); err != nil {
+		t.Fatalf("empty delete: %v", err)
+	}
+	// Foreign buffer names reject before any removal.
+	if err := s.DeleteBuffers(a.ID, []string{"evil.1.m4a"}, "transcribe "+a.ID); err == nil {
+		t.Fatal("foreign buffer must be rejected")
+	}
+}
+
+func TestResetToPending_BootRecoveryBookkeeping(t *testing.T) {
+	s, vcs, _, _ := testStore(t)
+	a, err := s.Create(CreateRequest{SourceKind: "audio", Audio: strings.NewReader("A"), AudioExt: "m4a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := s.Claim(a.ID)
+	if err != nil || claimed.Processing.Status != StatusRunning {
+		t.Fatalf("claim: %v %+v", err, claimed)
+	}
+	before := len(vcs.Commits)
+
+	got, err := s.ResetToPending(a.ID)
+	if err != nil {
+		t.Fatalf("reset: %v", err)
+	}
+	if got.Processing.Status != StatusPending || got.Processing.Step != StepTranscribe {
+		t.Fatalf("after reset: %+v", got.Processing)
+	}
+	if !got.Modified.Equal(claimed.Modified) {
+		t.Fatalf("boot reset must not bump modified: %v vs %v", got.Modified, claimed.Modified)
+	}
+	if len(vcs.Commits) != before {
+		t.Fatalf("boot reset must not commit: %+v", vcs.Commits[before:])
+	}
+	// Idempotent on non-running notes.
+	if _, err := s.ResetToPending(a.ID); err != nil {
+		t.Fatalf("idempotent reset: %v", err)
+	}
+	if _, err := s.ResetToPending("01NOPE"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("reset unknown: %v", err)
 	}
 }

@@ -58,6 +58,9 @@ func TestLoad_ValidMinimalAppliesDefaults(t *testing.T) {
 	if cfg.MaxUploadMB != 50 {
 		t.Errorf("max upload default = %d, want 50", cfg.MaxUploadMB)
 	}
+	if cfg.WorkerIdlePollSeconds != 30 {
+		t.Errorf("worker idle poll default = %d, want 30", cfg.WorkerIdlePollSeconds)
+	}
 	if cfg.WhisperLanguage != "auto" {
 		t.Errorf("whisper_language default = %q, want auto", cfg.WhisperLanguage)
 	}

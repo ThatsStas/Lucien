@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -491,6 +492,111 @@ func (s *Store) FailStep(id, step string, retryCount int, nextRetry *time.Time, 
 		n.Processing.Status = StatusFailed
 	}
 	if err := s.persist(n, nil, "", false, true); err != nil {
+		return nil, err
+	}
+	return n, nil
+}
+
+// --- Worker support: buffers and boot recovery ------------------------------
+
+// parseBufferName validates a numbered audio buffer file name
+// (<id>.<n>.<ext>) owned by id, returning the buffer number and the
+// normalized extension (DESIGN.md 3.1).
+func parseBufferName(id, name string) (int, string, bool) {
+	base := filepath.Base(name)
+	prefix := id + "."
+	if !strings.HasPrefix(base, prefix) {
+		return 0, "", false
+	}
+	mid := base[len(prefix):]
+	dot := strings.LastIndexByte(mid, '.')
+	if dot <= 0 {
+		return 0, "", false
+	}
+	num, err := strconv.Atoi(mid[:dot])
+	if err != nil || num < 1 {
+		return 0, "", false
+	}
+	ext := strings.ToLower(mid[dot+1:])
+	if !audioExts[ext] {
+		return 0, "", false
+	}
+	return num, ext, true
+}
+
+// AudioBuffers lists the note's audio buffer files by buffer number, so a
+// multi-buffer transcription replays them in capture order. Unnumbered or
+// foreign files are ignored.
+func (s *Store) AudioBuffers(id string) ([]string, error) {
+	entries, err := os.ReadDir(s.dir)
+	if err != nil {
+		return nil, err
+	}
+	type buf struct {
+		name string
+		num  int
+	}
+	var found []buf
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		if num, _, ok := parseBufferName(id, e.Name()); ok {
+			found = append(found, buf{e.Name(), num})
+		}
+	}
+	sort.Slice(found, func(i, j int) bool { return found[i].num < found[j].num })
+	names := make([]string, len(found))
+	for i, b := range found {
+		names[i] = b.name
+	}
+	return names, nil
+}
+
+// ReadBuffer returns an audio buffer's bytes. A name that does not belong
+// to the note or is not a numbered audio buffer is rejected.
+func (s *Store) ReadBuffer(id, name string) ([]byte, error) {
+	if _, _, ok := parseBufferName(id, name); !ok {
+		return nil, fmt.Errorf("notestore: %q is not an audio buffer of %s", name, id)
+	}
+	return os.ReadFile(filepath.Join(s.dir, filepath.Base(name)))
+}
+
+// DeleteBuffers removes audio buffer files and, when commitMsg is set,
+// commits the deletions (DESIGN.md 10 transcribe cleanup). Already-deleted
+// buffers are not an error: re-running a crashed step must be
+// indistinguishable from running it once (DESIGN.md 4).
+func (s *Store) DeleteBuffers(id string, names []string, commitMsg string) error {
+	for _, name := range names {
+		if _, _, ok := parseBufferName(id, name); !ok {
+			return fmt.Errorf("notestore: %q is not an audio buffer of %s", name, id)
+		}
+	}
+	for _, name := range names {
+		if err := os.Remove(filepath.Join(s.dir, filepath.Base(name))); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	if commitMsg != "" && len(names) > 0 {
+		return s.vcs.CommitPaths(names, commitMsg)
+	}
+	return nil
+}
+
+// ResetToPending flips a claimed (running) note back to pending: the boot
+// recovery for crash-mid-step (DESIGN.md 6 rule 3). Bookkeeping only:
+// modified is untouched and nothing is committed (DESIGN.md 10). It is a
+// no-op for notes in any other status.
+func (s *Store) ResetToPending(id string) (*Note, error) {
+	n, err := s.Read(id)
+	if err != nil {
+		return nil, err
+	}
+	if n.Processing.Status != StatusRunning {
+		return n, nil
+	}
+	n.Processing.Status = StatusPending
+	if err := s.persist(n, nil, "", false, false); err != nil {
 		return nil, err
 	}
 	return n, nil

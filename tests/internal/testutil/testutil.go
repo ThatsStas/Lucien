@@ -123,7 +123,10 @@ func Start(t *testing.T, bin string, args ...string) *Proc {
 
 // Stop terminates the process if still running. Safe to call twice.
 func (p *Proc) Stop() {
-	if p.Cmd != nil && p.Cmd.Process != nil && !p.exited.Load() {
+	if p.exited.Swap(true) {
+		return // already stopped or exited; the waitCh value is spent
+	}
+	if p.Cmd != nil && p.Cmd.Process != nil {
 		_ = p.Cmd.Process.Kill()
 	}
 	select {

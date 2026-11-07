@@ -46,6 +46,12 @@ type Config struct {
 	BackoffCapSeconds  int `toml:"backoff_cap_seconds"`
 	MaxRetries         int `toml:"max_retries"`
 
+	// WorkerIdlePollSeconds bounds the worker's sleep even when no wake
+	// signal arrives: DESIGN 6 rule 2 demands "a lost signal degrades to
+	// a delayed retry, never a stuck note", which requires a ceiling on
+	// event-driven waiting. Not a named DESIGN 12 knob (flagged in DoD).
+	WorkerIdlePollSeconds int `toml:"worker_idle_poll_seconds"`
+
 	TrashRetentionDays int `toml:"trash_retention_days"`
 	MaxUploadMB        int `toml:"max_upload_mb"`
 
@@ -102,6 +108,9 @@ func (c *Config) applyDefaults() {
 	if c.MaxRetries == 0 {
 		c.MaxRetries = 10
 	}
+	if c.WorkerIdlePollSeconds == 0 {
+		c.WorkerIdlePollSeconds = 30
+	}
 	if c.TrashRetentionDays == 0 {
 		c.TrashRetentionDays = 30
 	}
@@ -155,6 +164,9 @@ func (c *Config) validate() error {
 	}
 	if c.MaxRetries < 0 {
 		return fmt.Errorf("config: max_retries must be >= 0")
+	}
+	if c.WorkerIdlePollSeconds < 0 {
+		return fmt.Errorf("config: worker_idle_poll_seconds must be >= 0")
 	}
 	if c.TrashRetentionDays <= 0 {
 		return fmt.Errorf("config: trash_retention_days must be > 0")
