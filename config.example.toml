@@ -1,0 +1,44 @@
+# Lucien backend configuration (DESIGN.md 12).
+# Copy to config.local.toml (gitignored), fill in real values, start with
+#   lucien --config config.local.toml
+
+bind = "0.0.0.0"
+port = 8188
+
+# Git-versioned note files live here (one .json per note, .trash/ subdir).
+notes_dir = "/home/bloodsurfer/notes"
+
+# Derived SQLite cache. Deletable; rebuilt by POST /v1/admin/reindex.
+# Kept outside notes_dir so it never lands in the notes git repo.
+index_path = "/home/bloodsurfer/.lucien/index.sqlite"
+
+# Whisper endpoint: OpenAI-compatible multipart transcription
+# (Whisper Turbo API: POST /v1/audio/transcriptions).
+whisper_url = "http://10.0.0.93:9001/v1/audio/transcriptions"
+# "auto", "en", "ru", ... ; "" omits the parameter.
+whisper_language = "auto"
+
+# Per-client bearer tokens. token_sha256 = sha256 hex of the raw token;
+# generate one per client:  openssl rand -hex 32
+# and store only its hash here:  echo -n <token> | sha256sum
+[[clients]]
+name = "phone"
+token_sha256 = "REPLACE_ME_64_HEX"
+
+[[clients]]
+name = "agent"
+token_sha256 = "REPLACE_ME_64_HEX"
+
+# Backoff (DESIGN 4): next_retry_at = now + min(base * factor^retries, cap).
+# Defaults shown; omit to accept them.
+# backoff_base_seconds = 60
+# backoff_factor = 2
+# backoff_cap_seconds = 3600
+# max_retries = 10
+
+# trash_retention_days = 30
+# max_upload_mb = 50
+
+# TLS is accepted but unused in v1 (VPN provides transport security).
+# tls_cert_file = ""
+# tls_key_file = ""
