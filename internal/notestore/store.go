@@ -218,6 +218,9 @@ func (s *Store) AppendText(id, text string) (*Note, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := noTranscriptionInFlight(n); err != nil {
+		return nil, err
+	}
 	now := s.Now()
 	n.Entries = append(n.Entries, Entry{ID: nextEntryID(n.Entries), TS: now, Kind: "text", Text: text})
 	n.Processing = Processing{Step: StepEmbed, Status: StatusPending}
@@ -241,6 +244,9 @@ func (s *Store) AppendAudio(id string, r io.Reader, ext string) (*Note, error) {
 	}
 	n, err := s.Read(id)
 	if err != nil {
+		return nil, err
+	}
+	if err := noTranscriptionInFlight(n); err != nil {
 		return nil, err
 	}
 	bufName := fmt.Sprintf("%s.%d.%s", n.ID, s.nextBuffer(n.ID, ext), ext)
@@ -639,12 +645,29 @@ func normExt(ext string) (string, error) {
 	return ext, nil
 }
 
+// SupportedAudioExt reports whether an extension (no dot, any case) is a
+// storable audio format. Used by the API layer for 415 decisions.
+func SupportedAudioExt(ext string) bool {
+	return audioExts[strings.ToLower(strings.TrimPrefix(strings.TrimSpace(ext), "."))]
+}
+
 func truncTime(t *time.Time) *time.Time {
 	if t == nil {
 		return nil
 	}
 	v := t.UTC().Truncate(time.Second)
 	return &v
+}
+
+// noTranscriptionInFlight rejects appends while the note has audio pending
+// or running through the transcribe step (DESIGN.md 5.3: 409 keeps entry
+// ordering unambiguous).
+func noTranscriptionInFlight(n *Note) error {
+	if n.Processing.Step == StepTranscribe &&
+		(n.Processing.Status == StatusPending || n.Processing.Status == StatusRunning) {
+		return fmt.Errorf("%w: %s", ErrPendingTranscription, n.ID)
+	}
+	return nil
 }
 
 // contentEqual compares a note against its pre-edit JSON, ignoring the

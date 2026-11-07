@@ -628,3 +628,35 @@ func TestChainTable_MatchesDesign(t *testing.T) {
 }
 
 func intPtr(i int) *int { return &i }
+
+// DESIGN.md 5.3: appends while a transcription is in flight must return
+// 409 (via ErrPendingTranscription) so entry ordering stays unambiguous.
+func TestAppendBlockedDuringTranscription(t *testing.T) {
+	s, _, _, _ := testStore(t)
+	n, err := s.Create(CreateRequest{SourceKind: "audio", Audio: strings.NewReader("fake-m4a"), AudioExt: "m4a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AppendText(n.ID, "late thought"); !errors.Is(err, ErrPendingTranscription) {
+		t.Fatalf("append text during transcribe pending: %v", err)
+	}
+	if _, err := s.AppendAudio(n.ID, strings.NewReader("more"), "m4a"); !errors.Is(err, ErrPendingTranscription) {
+		t.Fatalf("append audio during transcribe pending: %v", err)
+	}
+	// While claimed (running) the block holds too.
+	if _, err := s.Claim(n.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AppendText(n.ID, "late thought"); !errors.Is(err, ErrPendingTranscription) {
+		t.Fatalf("append text during transcribe running: %v", err)
+	}
+	// Once the transcript lands, appends work again.
+	if _, err := s.CompleteStep(n.ID, StepTranscribe, func(n *Note) {
+		n.Entries = append(n.Entries, Entry{ID: 1, Kind: "transcript", Text: "hello"})
+	}, "transcribe "+n.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AppendText(n.ID, "late thought"); err != nil {
+		t.Fatalf("append after transcribe: %v", err)
+	}
+}
