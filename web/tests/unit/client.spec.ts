@@ -16,8 +16,9 @@ function jsonResponse(body: unknown, status = 200): Response {
 
 type FetchStub = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
 
-function lastCall(fetchMock: ReturnType<typeof vi.fn>) {
-  const call = fetchMock.mock.calls.at(-1)
+function lastCall(fetchMock: ReturnType<typeof vi.fn<FetchStub>>) {
+  const calls = fetchMock.mock.calls
+  const call = calls[calls.length - 1]
   if (!call) throw new Error('fetch was never called')
   return { url: String(call[0]), init: (call[1] ?? {}) as RequestInit }
 }

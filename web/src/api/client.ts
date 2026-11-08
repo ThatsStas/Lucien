@@ -99,9 +99,7 @@ export function createClient(
   // Drop undefined so the body carries only the documented keys; the backend
   // rejects unknown fields outright.
   function defined<T extends object>(obj: T): Partial<T> {
-    return Object.fromEntries(
-      Object.entries(obj).filter(([, v]) => v !== undefined),
-    ) as Partial<T>
+    return Object.fromEntries(Object.entries(obj).filter(([, v]) => v !== undefined)) as Partial<T>
   }
 
   return {
