@@ -81,3 +81,63 @@ func TestDefaultLevelHidesDebugLines(t *testing.T) {
 		t.Errorf("INFO startup line must exist without --debug:\n%s", b.proc.Output())
 	}
 }
+
+// TestAuthRejectionVisibleWithoutDebug: the operator story that started
+// this feature — a device getting 401s — must be explainable from the
+// default log alone, including WHY the token bounced.
+func TestAuthRejectionVisibleWithoutDebug(t *testing.T) {
+	b := startBackendLogging(t)
+
+	b.do("GET", "/v1/notes", nil, "", false) // no Authorization header
+	b.do("GET", "/v1/notes", nil, "", true)  // correct token (no noise expected)
+
+	warns := b.proc.LinesContaining("auth rejected")
+	if len(warns) != 1 {
+		t.Fatalf("exactly one auth rejected line, got %d:\n%s", len(warns), b.proc.Output())
+	}
+	for _, want := range []string{"level=WARN", "reason=missing_header", "method=GET", "path=/v1/notes"} {
+		if !strings.Contains(warns[0], want) {
+			t.Errorf("auth line missing %q: %s", want, warns[0])
+		}
+	}
+	if strings.Contains(b.proc.Output(), testToken) {
+		t.Error("auth log leaked the bearer token")
+	}
+}
+
+// TestAccessLinesRequireDebug: with -debug every request gets its access
+// line — public health polls included — matched per unique path (the
+// harness's own WaitFor-health polls make global counts racy, so pin
+// per-request instead).
+func TestAccessLinesRequireDebug(t *testing.T) {
+	b := startBackendLogging(t, "-debug")
+
+	code, _ := b.do("GET", "/v1/notes/01TESTTESTTESTTESTTESTA1", nil, "", false) // 401
+	if code != 401 {
+		t.Fatalf("probe1: %d", code)
+	}
+	code, _ = b.do("GET", "/v1/notes/01TESTTESTTESTTESTTESTA2", nil, "", true) // 404 authed
+	if code != 404 {
+		t.Fatalf("probe2: %d", code)
+	}
+	code, _ = b.do("POST", "/v1/notes", strings.NewReader(`{"text":"access probe"}`), "application/json", true) // 201
+	if code != 201 {
+		t.Fatalf("probe3: %d", code)
+	}
+
+	joined := strings.Join(b.proc.LinesContaining("http request"), "\n")
+	for _, want := range []string{
+		"status=401", "status=404", "status=201",
+		"path=/v1/notes/01TESTTESTTESTTESTTESTA1",
+		"path=/v1/notes/01TESTTESTTESTTESTTESTA2",
+		"method=POST", "dur_ms=", "remote=",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("access lines missing %q:\n%s", want, joined)
+		}
+	}
+	// Public health was logged too (from the harness's readiness poll).
+	if !strings.Contains(joined, "path=/v1/health") {
+		t.Errorf("health requests must get access lines too:\n%s", joined)
+	}
+}

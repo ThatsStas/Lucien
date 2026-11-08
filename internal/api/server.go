@@ -81,34 +81,102 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, http.StatusNotFound, "not found")
 	})
-	return mux
+	return s.withAccessLog(mux)
+}
+
+// --- access log ----------------------------------------------------------------
+
+// responseMeta collects what the handlers decided about a response so the
+// access line can state it: final status and, for errors, the message the
+// client saw. jsonOut/jsonErr are the choke points that fill it in.
+type responseMeta struct {
+	status int
+	reason string
+}
+
+// statusWriter captures the first WriteHeader code; Unwrap keeps
+// http.ResponseController working through the wrapper.
+type statusWriter struct {
+	http.ResponseWriter
+	meta *responseMeta
+}
+
+func (sw *statusWriter) WriteHeader(code int) {
+	if sw.meta.status == 0 {
+		sw.meta.status = code
+	}
+	sw.ResponseWriter.WriteHeader(code)
+}
+
+func (sw *statusWriter) Unwrap() http.ResponseWriter { return sw.ResponseWriter }
+
+func metaOf(w http.ResponseWriter) *responseMeta {
+	if sw, ok := w.(*statusWriter); ok {
+		return sw.meta
+	}
+	return nil
+}
+
+// withAccessLog emits exactly one debug line per HTTP request: method,
+// path, status, duration, remote and the server's reason when the request
+// bounced. Mechanics only — invisible at the default level.
+func (s *Server) withAccessLog(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		sw := &statusWriter{ResponseWriter: w, meta: &responseMeta{}}
+		next.ServeHTTP(sw, r)
+		status := sw.meta.status
+		if status == 0 {
+			status = http.StatusOK
+		}
+		s.log.Debug("http request",
+			"method", r.Method, "path", r.URL.Path,
+			"status", status, "dur_ms", time.Since(start).Milliseconds(),
+			"remote", r.RemoteAddr, "reason", sw.meta.reason)
+	})
 }
 
 // --- auth ---------------------------------------------------------------------
 
+// requireAuth bounces with a WARN naming the FAILURE MODE (missing vs
+// malformed vs unknown token) plus request context — the story an operator
+// needs when a device "keeps getting 401". The presented credential is
+// never logged, right or wrong. Accepted requests record which client
+// authenticated, at debug.
 func (s *Server) requireAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := r.Header.Get("Authorization")
 		const prefix = "Bearer "
-		if !strings.HasPrefix(h, prefix) {
+		var reason, client string
+		switch {
+		case h == "":
+			reason = "missing_header"
+		case !strings.HasPrefix(h, prefix):
+			reason = "malformed_header"
+		default:
+			if client = s.matchClient(strings.TrimPrefix(h, prefix)); client == "" {
+				reason = "unknown_token"
+			}
+		}
+		if reason != "" {
+			s.log.Warn("auth rejected", "reason", reason,
+				"method", r.Method, "path", r.URL.Path, "remote", r.RemoteAddr)
 			jsonErr(w, http.StatusUnauthorized, "unauthorized")
 			return
 		}
-		token := strings.TrimPrefix(h, prefix)
-		if !s.validToken(token) {
-			jsonErr(w, http.StatusUnauthorized, "unauthorized")
-			return
-		}
+		s.log.Debug("auth accepted", "client", client,
+			"method", r.Method, "path", r.URL.Path, "remote", r.RemoteAddr)
 		next.ServeHTTP(w, r)
 	})
 }
 
-// validToken hashes the candidate and constant-time compares against every
-// configured client hash (DESIGN.md 5, 12). No timing signal about which
-// client matched, no distinction between missing and wrong.
-func (s *Server) validToken(token string) bool {
+// matchClient hashes the candidate and constant-time compares against every
+// configured client hash (DESIGN.md 5, 12), returning the client name.
+// Comparison cost is identical for every client: no timing signal about
+// which one matched. "" means no client matched.
+func (s *Server) matchClient(token string) string {
 	if token == "" {
-		return false
+		return ""
 	}
 	sum := sha256.Sum256([]byte(token))
 	for _, c := range s.clients {
@@ -117,10 +185,10 @@ func (s *Server) validToken(token string) bool {
 			continue
 		}
 		if subtle.ConstantTimeCompare(sum[:], want) == 1 {
-			return true
+			return c.Name
 		}
 	}
-	return false
+	return ""
 }
 
 // --- handlers -----------------------------------------------------------------
@@ -416,6 +484,11 @@ func (s *Server) handlePatch(w http.ResponseWriter, r *http.Request, id string) 
 	n, err := s.store.Edit(id, p, base)
 	if errors.Is(err, notestore.ErrStale) {
 		// 409 plus the full current note so the client can merge (5.7).
+		// The log names the loser: which note and what base the client
+		// claimed, so "why did my write bounce" is answerable per request.
+		s.log.Debug("patch conflict", "id", id,
+			"client_base_modified", *req.BaseModified,
+			"current_modified", n.Modified)
 		jsonOut(w, http.StatusConflict, n)
 		return
 	}
@@ -657,6 +730,9 @@ func parseBool(v string) (*bool, error) {
 }
 
 func jsonOut(w http.ResponseWriter, code int, v any) {
+	if m := metaOf(w); m != nil && m.status == 0 {
+		m.status = code
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 	enc := json.NewEncoder(w)
@@ -665,5 +741,8 @@ func jsonOut(w http.ResponseWriter, code int, v any) {
 }
 
 func jsonErr(w http.ResponseWriter, code int, msg string) {
+	if m := metaOf(w); m != nil {
+		m.reason = msg
+	}
 	jsonOut(w, code, map[string]string{"error": msg})
 }
