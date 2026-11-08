@@ -67,6 +67,18 @@ export interface ListResult {
   total: number
 }
 
+// One row of GET /v1/tags (post-MVP addition beyond the cards): a distinct
+// tag and how many notes carry it, ordered count desc then tag asc. Feeds
+// the editor's tag suggestions.
+export interface TagCount {
+  tag: string
+  count: number
+}
+
+export interface TagListResult {
+  tags: TagCount[]
+}
+
 export interface ListParams {
   state?: State[]
   tag?: string[]

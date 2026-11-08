@@ -126,6 +126,7 @@ documented keys.
 | `POST /v1/notes/:id/append` | JSON `{"text":"..."}` or multipart `file` | `200 Note` | 400, 404, 409 (transcription in flight), 413, 415 |
 | `PATCH /v1/notes/:id` | `{"base_modified": "<RFC3339>", …}`, required; optional: `state`, `tags` (replaces set), `priority`, `remind_at`, `defer_until` (null clears), `entry_edit: {"id": int, "text": str}` | `200 Note` | **409 → body is the full current Note**; 400 invalid body/entry id; 404 |
 | `DELETE /v1/notes/:id` | none | `200 {"id":"01…"}` | 404 |
+| `GET /v1/tags` | none | `200 {"tags":[{"tag":"kernel","count":2}, …]}`, human and agent tags of live notes, count desc then tag asc | 500 index failure |
 
 Wire types, mirrored verbatim into `src/api/types.ts`:
 
@@ -148,6 +149,8 @@ interface Summary { id: string; state: State; tags: Tag[]; priority: number
   processing: { step: Processing['step']; status: Processing['status'] }
   snippet: string }
 interface ListResult { notes: Summary[]; total: number }
+interface TagCount { tag: string; count: number } // one row of GET /v1/tags
+interface TagListResult { tags: TagCount[] }
 ```
 
 Timestamps are RFC3339 strings; keep them as strings in the client and pass
@@ -210,6 +213,15 @@ key performs must also exist as a click target.
 | `d` | list | delete selected note (confirm dialog first) |
 | `/` | list | focus the search input |
 | `Esc` | anywhere | close top dialog; blur search input (second press clears it) |
+| `↓` / `↑` | tag input, dropdown open | move the highlighted suggestion (wraps at the ends) |
+| `Enter` | tag input | highlighted suggestion → add it verbatim; nothing highlighted → add the typed text |
+| `Tab` | tag input, suggestion highlighted | accept it instead of tabbing away |
+| `Esc` | tag input, dropdown open | close the dropdown until typing resumes |
+
+The four tag-input rows are component-local (the suggestion dropdown in
+`TagEditor.vue`): the global table is blind while any input is focused, so
+they never leak into view keys. Every one of them has a click target: the
+dropdown rows are buttons.
 
 The handler ignores the event unless `document.activeElement` is `body` (or a
 non-focusable element): any `input`, `textarea`, `select` or contenteditable
@@ -241,7 +253,8 @@ Discipline that keeps the future library swap cheap (and the tests honest):
   `new-note-button`, `new-note-text`, `new-note-submit`, `state-select`,
   `delete-button`, `confirm-delete`, `upload-button`, `processing-badge`,
   `edit-toggle`, `entry-select`, `entry-text`, `entry-save`, `tag-input`,
-  `tag-add`, `conflict-dialog`, `conflict-take-server`, `conflict-use-mine`,
+  `tag-add`, `tag-suggest`, `tag-suggest-<tag>`,
+  `conflict-dialog`, `conflict-take-server`, `conflict-use-mine`,
   `settings-token`, `settings-server-url`, `settings-test`,
   `settings-test-result`.
 
@@ -264,6 +277,7 @@ type Api = {
   appendText(id: string, text: string): Promise<Note>
   patchNote(id: string, patch: Patch): Promise<PatchResult>
   deleteNote(id: string): Promise<{ id: string }>
+  listTags(): Promise<TagListResult> // tag editor suggestions (post-card addendum)
 }
 type PatchResult = { kind: 'ok'; note: Note } | { kind: 'conflict'; note: Note }
 // patchNote resolves on 409 with the server's current note; every other

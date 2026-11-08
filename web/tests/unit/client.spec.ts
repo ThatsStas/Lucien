@@ -204,4 +204,13 @@ describe('the rest of the endpoint map', () => {
     await expect(api.deleteNote('01NOTE')).resolves.toEqual({ id: '01NOTE' })
     expect(lastCall(fetchMock).init.method).toBe('DELETE')
   })
+
+  it('listTags reads the {tags} vocabulary from GET /v1/tags', async () => {
+    const body = { tags: [{ tag: 'wien', count: 5 }, { tag: 'kernel', count: 1 }] }
+    const fetchMock = vi.fn<FetchStub>().mockResolvedValue(jsonResponse(body))
+    const api = createClient(settings(), fetchMock as unknown as typeof fetch)
+    await expect(api.listTags()).resolves.toEqual(body)
+    expect(lastCall(fetchMock).url).toBe('/v1/tags')
+    expect(lastCall(fetchMock).init.method).toBe('GET')
+  })
 })

@@ -7,10 +7,10 @@ import { mount } from '@vue/test-utils'
 import { describe, expect, it } from 'vitest'
 
 import TagEditor from '@/components/TagEditor.vue'
-import type { Tag } from '@/api/types'
+import type { Tag, TagCount } from '@/api/types'
 
-function mountEditor(tags: Tag[]) {
-  return mount(TagEditor, { props: { modelValue: tags } })
+function mountEditor(tags: Tag[], vocabulary: TagCount[] = []) {
+  return mount(TagEditor, { props: { modelValue: tags, vocabulary } })
 }
 
 describe('TagEditor', () => {
@@ -78,5 +78,122 @@ describe('TagEditor', () => {
     await wrapper.get('[data-testid="tag-input"]').setValue('   ')
     await wrapper.get('[data-testid="tag-add"]').trigger('click')
     expect(wrapper.emitted('update:modelValue')).toBeUndefined()
+  })
+})
+
+// Tag suggestions (post-card addendum): the vocabulary prop drives a fuzzy
+// dropdown so the human adopts the existing spelling. Keyboard and mouse are
+// peers: every pick has both. An ignored dropdown never blocks plain adds.
+// Engagement comes from click/keydown (jsdom never produces FocusEvents, so
+// ElInput's focus emit is untestable there); hiding on blur dispatches a
+// real FocusEvent, which is exactly what a browser does.
+describe('TagEditor suggestions', () => {
+  const vocab: TagCount[] = [
+    { tag: 'wien', count: 5 },
+    { tag: 'wiener-roast', count: 2 },
+    { tag: 'kernel', count: 1 },
+  ]
+
+  function inputOf(wrapper: ReturnType<typeof mountEditor>) {
+    return wrapper.get('[data-testid="tag-input"]')
+  }
+
+  async function engage(wrapper: ReturnType<typeof mountEditor>) {
+    await inputOf(wrapper).trigger('click')
+  }
+
+  async function blur(wrapper: ReturnType<typeof mountEditor>) {
+    inputOf(wrapper).element.dispatchEvent(new FocusEvent('blur'))
+    await wrapper.vm.$nextTick()
+  }
+
+  it('typing shows ranked fuzzy matches, most-used first among equals', async () => {
+    const wrapper = mountEditor([], vocab)
+    await engage(wrapper)
+    await inputOf(wrapper).setValue('we')
+    const items = wrapper.findAll('[data-testid^="tag-suggest-"]')
+    expect(items.map((i) => i.text())).toEqual(['wien', 'wiener-roast'])
+  })
+
+  it('clicking with nothing typed shows the most-used tags', async () => {
+    const wrapper = mountEditor([], vocab)
+    await engage(wrapper)
+    expect(wrapper.find('[data-testid="tag-suggest"]').exists()).toBe(true)
+    expect(wrapper.get('[data-testid="tag-suggest-wien"]').text()).toBe('wien')
+  })
+
+  it('ArrowDown then Enter adopts the existing name verbatim, not the typed text', async () => {
+    const wrapper = mountEditor([], vocab)
+    await engage(wrapper)
+    await inputOf(wrapper).setValue('wen')
+    await inputOf(wrapper).trigger('keydown', { key: 'ArrowDown' })
+    await inputOf(wrapper).trigger('keydown', { key: 'Enter' })
+    expect(wrapper.emitted('update:modelValue')?.[0]).toEqual([[{ name: 'wien', by: 'human' }]])
+    expect((inputOf(wrapper).element as HTMLInputElement).value).toBe('')
+  })
+
+  it('ArrowDown wraps and ArrowUp walks back; Enter takes the highlighted row', async () => {
+    const wrapper = mountEditor([], vocab)
+    await engage(wrapper)
+    await inputOf(wrapper).setValue('wi')
+    // two items, start unhighlighted: Down lands on 0, Down wraps to 1
+    await inputOf(wrapper).trigger('keydown', { key: 'ArrowDown' })
+    await inputOf(wrapper).trigger('keydown', { key: 'ArrowDown' })
+    await inputOf(wrapper).trigger('keydown', { key: 'ArrowUp' })
+    await inputOf(wrapper).trigger('keydown', { key: 'Enter' })
+    expect(wrapper.emitted('update:modelValue')?.[0]).toEqual([[{ name: 'wien', by: 'human' }]])
+  })
+
+  it('Tab accepts the highlighted suggestion instead of tabbing away', async () => {
+    const wrapper = mountEditor([], vocab)
+    await engage(wrapper)
+    await inputOf(wrapper).setValue('knl')
+    await inputOf(wrapper).trigger('keydown', { key: 'ArrowDown' })
+    await inputOf(wrapper).trigger('keydown', { key: 'Tab' })
+    expect(wrapper.emitted('update:modelValue')?.[0]).toEqual([[{ name: 'kernel', by: 'human' }]])
+  })
+
+  it('Esc closes the dropdown until typing resumes', async () => {
+    const wrapper = mountEditor([], vocab)
+    await engage(wrapper)
+    await inputOf(wrapper).setValue('w')
+    expect(wrapper.find('[data-testid="tag-suggest"]').exists()).toBe(true)
+    await inputOf(wrapper).trigger('keydown', { key: 'Escape' })
+    expect(wrapper.find('[data-testid="tag-suggest"]').exists()).toBe(false)
+    await inputOf(wrapper).setValue('wi')
+    expect(wrapper.find('[data-testid="tag-suggest"]').exists()).toBe(true)
+  })
+
+  it('Enter with nothing highlighted still adds the raw typed word', async () => {
+    const wrapper = mountEditor([], vocab)
+    await engage(wrapper)
+    await inputOf(wrapper).setValue('fresh')
+    await inputOf(wrapper).trigger('keydown', { key: 'Enter' })
+    expect(wrapper.emitted('update:modelValue')?.[0]).toEqual([[{ name: 'fresh', by: 'human' }]])
+  })
+
+  it('clicking a suggestion adopts it verbatim', async () => {
+    const wrapper = mountEditor([], vocab)
+    await engage(wrapper)
+    await inputOf(wrapper).setValue('wen')
+    await wrapper.get('[data-testid="tag-suggest-wien"]').trigger('mousedown')
+    expect(wrapper.emitted('update:modelValue')?.[0]).toEqual([[{ name: 'wien', by: 'human' }]])
+  })
+
+  it('tags the note already carries are never suggested back', async () => {
+    const wrapper = mountEditor([{ name: 'Wien', by: 'human' }], vocab)
+    await engage(wrapper)
+    await inputOf(wrapper).setValue('wien')
+    expect(wrapper.find('[data-testid="tag-suggest-wien"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="tag-suggest-wiener-roast"]').exists()).toBe(true)
+  })
+
+  it('a real blur retires the dropdown', async () => {
+    const wrapper = mountEditor([], vocab)
+    await engage(wrapper)
+    await inputOf(wrapper).setValue('we')
+    expect(wrapper.find('[data-testid="tag-suggest"]').exists()).toBe(true)
+    await blur(wrapper)
+    expect(wrapper.find('[data-testid="tag-suggest"]').exists()).toBe(false)
   })
 })

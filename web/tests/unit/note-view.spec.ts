@@ -7,7 +7,8 @@ import { ElInputNumber, ElOption, ElSelect, ElTag } from 'element-plus'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { ApiError, type Api } from '@/api/client'
-import type { Note, Patch, PatchResult } from '@/api/types'
+import type { Note, Patch, PatchResult, TagCount, TagListResult } from '@/api/types'
+import { __clearTagVocabularyCache } from '@/composables/useTagVocabulary'
 import { attachAppKeymap } from '@/lib/keymap'
 
 const push = vi.hoisted(() => vi.fn<(to: string) => void>())
@@ -55,7 +56,7 @@ function makeNote(over: Partial<Note> = {}): Note {
   }
 }
 
-function makeApi(note: Note | null, patchResult?: PatchResult): Api {
+function makeApi(note: Note | null, patchResult?: PatchResult, tags: TagCount[] = []): Api {
   return {
     getNote: vi.fn<(id: string) => Promise<Note>>(() =>
       note ? Promise.resolve(note) : Promise.reject(new ApiError(404, 'note not found')),
@@ -66,6 +67,7 @@ function makeApi(note: Note | null, patchResult?: PatchResult): Api {
     deleteNote: vi.fn<(id: string) => Promise<{ id: string }>>(() =>
       Promise.resolve({ id: '01ABC' }),
     ),
+    listTags: vi.fn<() => Promise<TagListResult>>(() => Promise.resolve({ tags })),
   } as unknown as Api
 }
 
@@ -299,6 +301,9 @@ describe('edit mode', () => {
     push.mockClear()
     toast.mockClear()
     routeQuery.current = {}
+    // The vocabulary cache is module-level (one fetch per app load); specs
+    // start cold so call-count assertions mean what they say.
+    __clearTagVocabularyCache()
   })
 
   it('edit-toggle opens the editor with the first entry loaded', async () => {
@@ -327,6 +332,31 @@ describe('edit mode', () => {
     routeQuery.current = { edit: '1' }
     const wrapper = await mountView(makeApi(makeNote()))
     expect(wrapper.find('[data-testid="edit-form"]').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('the editor loads the tag vocabulary and suggests from it', async () => {
+    const api = makeApi(makeNote(), undefined, [{ tag: 'kernel', count: 2 }])
+    const wrapper = await mountView(api)
+    await wrapper.get('[data-testid="edit-toggle"]').trigger('click')
+    await new Promise((r) => setTimeout(r, 0)) // land the fire-and-forget fetch
+    expect(api.listTags).toHaveBeenCalledTimes(1)
+    const input = wrapper.get('[data-testid="tag-input"]')
+    await input.trigger('click')
+    await input.setValue('knl')
+    expect(wrapper.find('[data-testid="tag-suggest-kernel"]').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('the vocabulary is fetched once per app load, not once per editor open', async () => {
+    const api = makeApi(makeNote(), undefined, [{ tag: 'kernel', count: 2 }])
+    const wrapper = await mountView(api)
+    await wrapper.get('[data-testid="edit-toggle"]').trigger('click')
+    await new Promise((r) => setTimeout(r, 0))
+    await wrapper.get('[data-testid="edit-cancel"]').trigger('click')
+    await wrapper.get('[data-testid="edit-toggle"]').trigger('click')
+    await new Promise((r) => setTimeout(r, 0))
+    expect(api.listTags).toHaveBeenCalledTimes(1)
     wrapper.unmount()
   })
 

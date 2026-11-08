@@ -18,6 +18,7 @@ import {
 import { useAppApi } from '@/api/app-api'
 import { ApiError, type Api } from '@/api/client'
 import type { ConflictDraft, Note, State, Tag } from '@/api/types'
+import { useTagVocabulary } from '@/composables/useTagVocabulary'
 import { useKeys } from '@/lib/keymap'
 import ConflictDialog from '@/components/ConflictDialog.vue'
 import ConfirmDeleteDialog from '@/components/ConfirmDeleteDialog.vue'
@@ -129,6 +130,9 @@ const entryId = ref(0)
 const entryText = ref('')
 const priorityDraft = ref(0)
 const tagsDraft = ref<Tag[]>([])
+// Fuzzy tag suggestions (post-card addendum): the GET /v1/tags vocabulary,
+// fetched on first editor open and cached module-wide behind that.
+const { vocabulary: tagVocabulary, load: loadTagVocabulary } = useTagVocabulary(api)
 
 async function loadAndMaybeEdit(): Promise<void> {
   await load()
@@ -150,6 +154,7 @@ function openEdit(): void {
   priorityDraft.value = note.value.priority
   tagsDraft.value = note.value.tags.map((t) => ({ ...t }))
   editing.value = true
+  void loadTagVocabulary() // fire and forget; a miss just means no suggestions
 }
 
 function closeEdit(): void {
@@ -335,7 +340,7 @@ async function confirmDelete(): Promise<void> {
           <span class="edit-label">Priority</span>
           <ElInputNumber v-model="priorityDraft" :min="0" :max="3" data-testid="priority-input" />
         </div>
-        <TagEditor v-model="tagsDraft" />
+        <TagEditor v-model="tagsDraft" :vocabulary="tagVocabulary" />
         <div class="edit-actions">
           <ElButton data-testid="entry-save" type="primary" :disabled="saving" @click="saveEdit">
             {{ saving ? 'Saving…' : 'Save' }}

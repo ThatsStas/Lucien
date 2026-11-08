@@ -54,3 +54,9 @@ transitions, delete-to-trash, processing badges) and `web-4` (editing:
 entry text, human tags, priority, 409 merge dialog) are done, each
 committed green with unit and e2e coverage. `web-5` (audio upload with
 transcription polling) and `web-6` (refactor + acceptance) are pending.
+
+Post-card addendum on top of `web-4`: the tag input in the editor
+fuzzy-suggests existing tags from `GET /v1/tags` (fetched once per app
+load), so `wien` is adopted whole instead of a near-miss being minted;
+↑/↓ navigate, Enter/Tab accept, Esc dismisses, and every suggestion is a
+button (see `docs/FRONTEND-DESIGN.md` §7–8).

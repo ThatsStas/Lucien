@@ -11,6 +11,7 @@ import type {
   Note,
   Patch,
   PatchResult,
+  TagListResult,
 } from './types'
 
 export class ApiError extends Error {
@@ -36,6 +37,7 @@ export interface Api {
   appendText(id: string, text: string): Promise<Note>
   patchNote(id: string, patch: Patch): Promise<PatchResult>
   deleteNote(id: string): Promise<{ id: string }>
+  listTags(): Promise<TagListResult>
 }
 
 type Settings = { token: string; serverUrl: string }
@@ -141,5 +143,7 @@ export function createClient(
     },
 
     deleteNote: (id) => request('DELETE', `/v1/notes/${encodeURIComponent(id)}`),
+
+    listTags: () => request('GET', '/v1/tags'),
   }
 }

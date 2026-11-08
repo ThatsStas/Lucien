@@ -191,4 +191,49 @@ test.describe('editing and conflict resolution', () => {
     // Adopted as local truth: the select now shows the server's state.
     await expect(page.getByTestId('state-select')).toContainText('archived')
   })
+
+  // Tag suggestions (post-card addendum): the editor fuzzy-matches the
+  // GET /v1/tags vocabulary so the human reuses the existing spelling.
+  // Click and keyboard are peers — one test each.
+  test('the tag input suggests an existing tag; clicking adopts it verbatim', async ({ page }) => {
+    await seed('vienna trip notes', { tags: ['wien'] })
+    const target = await seed('needs the right tag')
+    await page.goto(`/n/${target}?edit=1`)
+    await expect(page.getByTestId('edit-form')).toBeVisible()
+
+    await page.getByTestId('tag-input').click() // engage the dropdown
+    await page.getByTestId('tag-input').fill('wen')
+    await expect(page.getByTestId('tag-suggest-wien')).toBeVisible()
+    await page.getByTestId('tag-suggest-wien').click()
+    await expect(page.getByTestId('tag-chip-wien')).toBeVisible()
+    // The typed fragment never becomes a tag of its own.
+    await expect(page.getByTestId('tag-chip-wen')).toHaveCount(0)
+
+    await page.getByTestId('entry-save').click()
+    await expect(page.getByText('saved', { exact: true })).toBeVisible()
+    await expect
+      .poll(async () => (await getNote(target) as { tags: unknown[] }).tags, { timeout: 2_000 })
+      .toEqual(expect.arrayContaining([{ name: 'wien', by: 'human' }]))
+  })
+
+  test('arrow keys and Enter pick the suggestion, saving the typing', async ({ page }) => {
+    await seed('kernel panic reading list', { tags: ['kernel'] })
+    const target = await seed('another note to tag')
+    await page.goto(`/n/${target}?edit=1`)
+    await expect(page.getByTestId('edit-form')).toBeVisible()
+
+    await page.getByTestId('tag-input').click()
+    await page.getByTestId('tag-input').fill('knl')
+    await expect(page.getByTestId('tag-suggest-kernel')).toBeVisible()
+    await page.getByTestId('tag-input').press('ArrowDown')
+    await page.getByTestId('tag-input').press('Enter')
+    await expect(page.getByTestId('tag-chip-kernel')).toBeVisible()
+    await expect(page.getByTestId('tag-chip-knl')).toHaveCount(0)
+
+    await page.getByTestId('entry-save').click()
+    await expect(page.getByText('saved', { exact: true })).toBeVisible()
+    await expect
+      .poll(async () => (await getNote(target) as { tags: unknown[] }).tags, { timeout: 2_000 })
+      .toEqual(expect.arrayContaining([{ name: 'kernel', by: 'human' }]))
+  })
 })

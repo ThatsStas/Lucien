@@ -20,7 +20,8 @@ embeddings/dedup, reminders/hardening) are pending — see
 
 Web frontend: cards `web-1`–`web-4` done (settings + API client, list with
 filters/search/quick-create + keymap, detail with state transitions and
-delete-to-trash, editing with 409 merge dialog). `web-5` (audio upload) and
+delete-to-trash, editing with 409 merge dialog and fuzzy tag suggestions
+from `GET /v1/tags`). `web-5` (audio upload) and
 `web-6` (refactor + acceptance) are pending — see [`web/README.md`](web/README.md).
 
 ## Build & test
