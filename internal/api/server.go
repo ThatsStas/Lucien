@@ -519,6 +519,8 @@ func (s *Server) handleReindex(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, http.StatusInternalServerError, "reindex failed")
 		return
 	}
+	// The admin triggered this by hand: give the receipt at INFO.
+	s.log.Info("reindex complete", "scanned", len(notes), "reindexed", n)
 	jsonOut(w, http.StatusOK, map[string]int{"reindexed": n})
 }
 

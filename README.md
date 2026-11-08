@@ -49,11 +49,31 @@ survive until their transcript is committed.
 Add `-debug` for verbose mechanics: the resolved config dump, one access
 line per HTTP request, auth decisions, whisper calls and worker
 sleep/wake cycles. Default level already shows every state transition
-(INFO) and everything broken (WARN/ERROR).
+(INFO) and everything broken (WARN/ERROR). The level rules and redaction
+guarantees are in the Logging policy below.
 
 ```sh
 ./lucien -config config.local.toml -debug
 ```
+
+## Logging policy
+
+Everything goes to one stderr stream (`slog`, text format). Levels are
+picked so the default view holds only what an operator must see;
+`-debug` adds mechanics.
+
+| Level | When |
+| --- | --- |
+| `ERROR` | Server-side failures that affect a request or operation: git init/add/commit failures, index or boot failures, corrupt note files, pipeline panics |
+| `WARN` | Retryable failures (whisper transport/5xx with `status`+`retryable`, scheduled retries), auth rejections with reason (`missing_header` / `malformed_header` / `unknown_token`), terminal note failures, unreadable files skipped |
+| `INFO` | State transitions and operations: claim, commit, re-arm, boot-recovery summary (`re_armed`, `stray_buffers_swept`), repo initialization, reindex receipt |
+| `DEBUG` | Per-request / per-call mechanics: one access line per request (`method path status dur_ms remote reason`), auth-accepted client name, whisper request/response (sizes, never bodies), git invocations, worker sleep/wake/skip reasons, resolved config dump |
+
+Client-caused 4xx stays silent at the default level — it surfaces only in
+the debug access line. Never logged, at any level: bearer tokens (right
+or wrong), `token_sha256` values, note/entry text, whisper response
+bodies (only their size is logged; an error snippet lives in the note's
+own `last_error` field, which the API serves), and audio bytes.
 
 ## Exercise (smoke)
 

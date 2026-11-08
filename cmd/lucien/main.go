@@ -87,7 +87,7 @@ func run(configPath string, log *slog.Logger) error {
 	}
 	defer idx.Close()
 
-	store := notestore.New(cfg.NotesDir, &notestore.Git{Dir: cfg.NotesDir}, idx, log)
+	store := notestore.New(cfg.NotesDir, &notestore.Git{Dir: cfg.NotesDir, Log: log}, idx, log)
 	if err := store.Init(); err != nil {
 		return err
 	}

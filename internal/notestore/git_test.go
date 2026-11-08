@@ -1,8 +1,13 @@
 package notestore
 
 import (
+	"bytes"
+	"log/slog"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -177,5 +182,120 @@ func TestGit_NoOpEditCreatesNoCommit(t *testing.T) {
 	after := mustRead(t, s, n.ID)
 	if !after.Modified.Equal(n.Modified) {
 		t.Errorf("no-op edit bumped modified: %v vs %v", after.Modified, n.Modified)
+	}
+}
+
+// --- git failure observability ------------------------------------------------
+
+// logCap is a goroutine-safe slog sink for git-level assertions.
+type logCap struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (c *logCap) Write(p []byte) (int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.b.Write(p)
+}
+
+func (c *logCap) String() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.b.String()
+}
+
+func (c *logCap) reset() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.b.Reset()
+}
+
+func (c *logCap) lines(substr string) []string {
+	var out []string
+	for _, l := range strings.Split(c.String(), "\n") {
+		if strings.Contains(l, substr) {
+			out = append(out, l)
+		}
+	}
+	return out
+}
+
+func capLogger(c *logCap, lvl slog.Level) *slog.Logger {
+	return slog.New(slog.NewTextHandler(c, &slog.HandlerOptions{Level: lvl}))
+}
+
+func TestGitInitLogged(t *testing.T) {
+	dir := t.TempDir()
+	c := &logCap{}
+	g := &Git{Dir: dir, Log: capLogger(c, slog.LevelInfo)}
+	if err := g.Init(); err != nil {
+		t.Fatal(err)
+	}
+	lines := c.lines("notes repo initialized")
+	if len(lines) != 1 || !strings.Contains(lines[0], "level=INFO") {
+		t.Errorf("first init must log one INFO repo-initialized line: %v", lines)
+	}
+	// A restart over an existing repo stays silent (nothing was created).
+	if err := g.Init(); err != nil {
+		t.Fatal(err)
+	}
+	if len(c.lines("notes repo initialized")) != 1 {
+		t.Errorf("re-init must not claim a new repo:\n%s", c.String())
+	}
+}
+
+func TestGitInitFailureLogged(t *testing.T) {
+	base := t.TempDir()
+	blocked := filepath.Join(base, "blocked")
+	if err := os.WriteFile(blocked, []byte("not a dir"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c := &logCap{}
+	g := &Git{Dir: blocked, Log: capLogger(c, slog.LevelInfo)}
+	if err := g.Init(); err == nil {
+		t.Fatal("init over a plain file must fail")
+	}
+	lines := c.lines("git init failed")
+	if len(lines) != 1 || !strings.Contains(lines[0], "level=ERROR") {
+		t.Errorf("init failure must log one ERROR: %v", lines)
+	}
+}
+
+func TestGitCommitFailureNoOpAndMechanics(t *testing.T) {
+	dir := t.TempDir()
+	c := &logCap{}
+	g := &Git{Dir: dir, Log: capLogger(c, slog.LevelDebug)}
+	if err := g.Init(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "a.json"), []byte(`{"id":"a"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.CommitPaths([]string{"a.json"}, "add a"); err != nil {
+		t.Fatal(err)
+	}
+	// Success mechanics are debug-only: the git invocation is visible.
+	if len(c.lines("git command")) == 0 || len(c.lines("level=ERROR")) != 0 {
+		t.Errorf("debug must record git commands, no ERROR:\n%s", c.String())
+	}
+
+	// No-op commit: skipped quietly (debug), never an ERROR.
+	c.reset()
+	if err := g.CommitPaths([]string{"a.json"}, "add a"); err != nil {
+		t.Fatalf("nothing-to-commit must be nil: %v", err)
+	}
+	if len(c.lines("git commit skipped")) != 1 || len(c.lines("level=ERROR")) != 0 {
+		t.Errorf("no-op commit must log one debug skip, no ERROR:\n%s", c.String())
+	}
+
+	// Real failure: staging a path outside the repo fails LOUD.
+	c.reset()
+	if err := g.CommitPaths([]string{"../escape"}, "bad"); err == nil {
+		t.Fatal("staging outside the repo must fail")
+	}
+	lines := c.lines("git add failed")
+	if len(lines) != 1 || !strings.Contains(lines[0], "level=ERROR") {
+		t.Errorf("add failure must log one ERROR: %v", lines)
 	}
 }

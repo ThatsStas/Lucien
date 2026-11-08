@@ -344,3 +344,24 @@ func TestServerErrorLoggedAtErrorLevel(t *testing.T) {
 		t.Errorf("corrupt note must produce an ERROR line at default level:\n%s", out)
 	}
 }
+
+// TestReindexLoggedAtInfo: an admin reindex states what it did at INFO —
+// the operator triggered it and deserves a receipt without --debug.
+func TestReindexLoggedAtInfo(t *testing.T) {
+	e := newEnv(t, slog.LevelInfo)
+	for _, txt := range []string{"one", "two"} {
+		code, body := e.req(t, "POST", "/v1/notes", `{"text":"`+txt+`"}`, "application/json", true)
+		if code != http.StatusCreated {
+			t.Fatalf("create: %d %s", code, body)
+		}
+	}
+	code, body := e.req(t, "POST", "/v1/admin/reindex", "", "", true)
+	if code != http.StatusOK {
+		t.Fatalf("reindex: %d %s", code, body)
+	}
+	lines := e.cap.lines("reindex complete")
+	if len(lines) != 1 || !strings.Contains(lines[0], "level=INFO") ||
+		!strings.Contains(lines[0], "reindexed=2") {
+		t.Errorf("reindex must log one INFO receipt line:\n%s", strings.Join(lines, "\n"))
+	}
+}
