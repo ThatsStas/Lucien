@@ -108,3 +108,9 @@ export interface Patch {
 }
 
 export type PatchResult = { kind: 'ok'; note: Note } | { kind: 'conflict'; note: Note }
+
+// The body a save intended to send, minus base_modified: the conflict dialog
+// shows it as "what you were about to send", and use-mine resends it with
+// the server's modified (card web-4 slice 3). The sender supplies
+// base_modified at send time, from a note it just read.
+export type ConflictDraft = Omit<Patch, 'base_modified'>

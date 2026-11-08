@@ -17,8 +17,9 @@ import {
 
 import { useAppApi } from '@/api/app-api'
 import { ApiError, type Api } from '@/api/client'
-import type { Note, State, Tag } from '@/api/types'
+import type { ConflictDraft, Note, State, Tag } from '@/api/types'
 import { useKeys } from '@/lib/keymap'
+import ConflictDialog from '@/components/ConflictDialog.vue'
 import ConfirmDeleteDialog from '@/components/ConfirmDeleteDialog.vue'
 import TagEditor from '@/components/TagEditor.vue'
 
@@ -36,14 +37,29 @@ const saving = ref(false)
 // Select bound to a draft: on a failed patch the draft snaps back to the
 // server truth held in note, visibly correcting the control.
 const stateDraft = ref<State>('inbox')
-// The server note that refused our patch; card 4 replaces this placeholder
-// with the conflict dialog (TODO(card4)).
-const conflict = ref<Note | null>(null)
+// The 409 flow (card web-4 slice 3): the server note that refused our patch,
+// the draft we were about to send, and the dialog that shows both. One
+// surface for every patchNote conflict — editor saves and state changes
+// ride the same code.
+const conflictServer = ref<Note | null>(null)
+const conflictDraft = ref<ConflictDraft>({})
+const conflictVisible = ref(false)
+
+function openConflict(server: Note, draft: ConflictDraft): void {
+  conflictServer.value = server
+  conflictDraft.value = draft
+  conflictVisible.value = true
+}
+
+function closeConflict(): void {
+  conflictVisible.value = false
+}
 
 async function load(): Promise<void> {
   notFound.value = false
   error.value = null
-  conflict.value = null
+  conflictServer.value = null
+  conflictVisible.value = false
   try {
     note.value = await api.getNote(props.id)
     if (note.value) stateDraft.value = note.value.state
@@ -76,9 +92,10 @@ async function changeState(next: State): Promise<void> {
     if (result.kind === 'ok') {
       note.value = result.note
       stateDraft.value = result.note.state
-      conflict.value = null
     } else {
-      conflict.value = result.note
+      // Same dialog as the editor path (card web-4: state changes ride the
+      // same patchNote and get it for free).
+      openConflict(result.note, { state: next })
       stateDraft.value = note.value.state
     }
   } catch {
@@ -146,26 +163,76 @@ function toggleEdit(): void {
 
 async function saveEdit(): Promise<void> {
   if (!note.value || saving.value) return
+  const draft: ConflictDraft = {
+    entry_edit: { id: entryId.value, text: entryText.value },
+    priority: priorityDraft.value,
+    tags: tagsDraft.value,
+  }
   saving.value = true
   try {
     const result = await api.patchNote(props.id, {
       base_modified: note.value.modified,
-      entry_edit: { id: entryId.value, text: entryText.value },
-      priority: priorityDraft.value,
-      tags: tagsDraft.value,
+      ...draft,
     })
     if (result.kind === 'ok') {
       note.value = result.note
       stateDraft.value = result.note.state
-      conflict.value = null
       editing.value = false
       ElMessage({ message: 'saved', type: 'success' })
     } else {
-      // Keep the draft on screen; slice 3 swaps the placeholder for the
-      // merge dialog.
-      conflict.value = result.note
+      // Keep the draft on screen behind the dialog; the user decides there.
+      openConflict(result.note, draft)
     }
   } catch {
+    ElMessage({ message: 'save failed', type: 'error' })
+  } finally {
+    saving.value = false
+  }
+}
+
+// Adopt the 409's note as local truth and re-seed any open editor from it
+// (card web-4 acceptance 3): stay in edit mode, show the server's values.
+function adoptServer(server: Note): void {
+  note.value = server
+  stateDraft.value = server.state
+  if (editing.value) {
+    const entry = server.entries.find((e) => e.id === entryId.value) ?? server.entries[0]
+    entryId.value = entry?.id ?? 0
+    entryText.value = entry?.text ?? ''
+    priorityDraft.value = server.priority
+    tagsDraft.value = server.tags.map((t) => ({ ...t }))
+  }
+}
+
+function takeServer(): void {
+  if (conflictServer.value) adoptServer(conflictServer.value)
+  closeConflict()
+  ElMessage({ message: 'kept the server version', type: 'info' })
+}
+
+// Last-writer-wins *after the loser admits it saw the winner*: resend the
+// identical draft with the server's modified, never the stale base again.
+// A third writer just reopens the dialog with fresh data — no retry loop.
+async function useMine(): Promise<void> {
+  const server = conflictServer.value
+  if (!server || saving.value) return
+  saving.value = true
+  try {
+    const result = await api.patchNote(props.id, {
+      ...conflictDraft.value,
+      base_modified: server.modified,
+    })
+    if (result.kind === 'ok') {
+      note.value = result.note
+      stateDraft.value = result.note.state
+      editing.value = false
+      closeConflict()
+      ElMessage({ message: 'saved', type: 'success' })
+    } else {
+      conflictServer.value = result.note
+    }
+  } catch {
+    closeConflict()
     ElMessage({ message: 'save failed', type: 'error' })
   } finally {
     saving.value = false
@@ -238,14 +305,6 @@ async function confirmDelete(): Promise<void> {
           Delete
         </ElButton>
       </header>
-      <section v-if="conflict" data-testid="conflict-placeholder" class="panel">
-        <p>
-          someone else changed this note (server modified
-          {{ conflict.modified }}). TODO(card4) replaces this with the conflict
-          dialog.
-        </p>
-        <ElButton data-testid="conflict-reload" @click="load">Reload</ElButton>
-      </section>
       <section data-testid="processing-block" class="processing">
         <span data-testid="proc-step">{{ note.processing.step }}</span>
         <span data-testid="proc-status">{{ note.processing.status }}</span>
@@ -297,6 +356,15 @@ async function confirmDelete(): Promise<void> {
       v-model:visible="deleteVisible"
       :note-id="note?.id ?? ''"
       @confirm="confirmDelete"
+    />
+    <ConflictDialog
+      v-if="conflictVisible && conflictServer"
+      :visible="conflictVisible"
+      :server="conflictServer"
+      :draft="conflictDraft"
+      @take-server="takeServer"
+      @use-mine="useMine"
+      @close="closeConflict"
     />
   </main>
 </template>

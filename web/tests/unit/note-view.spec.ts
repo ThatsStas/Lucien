@@ -3,7 +3,7 @@
 // vue-router is mocked so navigation assertions stay cheap.
 
 import { mount, type VueWrapper } from '@vue/test-utils'
-import { ElInputNumber, ElOption, ElSelect } from 'element-plus'
+import { ElInputNumber, ElOption, ElSelect, ElTag } from 'element-plus'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { ApiError, type Api } from '@/api/client'
@@ -78,6 +78,9 @@ async function mountView(api: Api, id = '01ABC') {
 describe('NoteView', () => {
   beforeEach(() => {
     push.mockClear()
+    // The delete-order assertion compares global invocation timestamps,
+    // so stray toasts from earlier tests (conflict dialog) must not leak.
+    toast.mockClear()
   })
 
   it('fetches the note exactly once on mount', async () => {
@@ -215,7 +218,7 @@ describe('NoteView', () => {
     })
   })
 
-  it('routes a conflict to a placeholder with the server modified and a reload', async () => {
+  it('routes a state conflict to the dialog and closes cleanly on take-server', async () => {
     const api = makeApi(makeNote(), {
       kind: 'conflict',
       note: makeNote({ state: 'done', modified: '2026-11-07T14:00:00Z' }),
@@ -223,13 +226,22 @@ describe('NoteView', () => {
     const wrapper = await mountView(api)
     wrapper.findComponent(ElSelect).vm.$emit('change', 'todo')
     await new Promise((r) => setTimeout(r, 0))
-    const box = wrapper.get('[data-testid="conflict-placeholder"]')
-    expect(box.text()).toContain('2026-11-07T14:00:00Z')
+    // Same dialog as the editor path, for free (card web-4: verify, don't
+    // rebuild): server on the left, my state draft on the right.
+    const dialog = wrapper.get('[data-testid="conflict-dialog"]')
+    expect(dialog.get('[data-testid="conflict-server"]').text()).toContain('2026-11-07T14:00:00Z')
+    expect(dialog.get('[data-testid="conflict-draft"]').text()).toContain('todo')
 
-    await box.get('[data-testid="conflict-reload"]').trigger('click')
+    // Buttons live in the dialog footer, outside the columns div.
+    await wrapper.get('[data-testid="conflict-take-server"]').trigger('click')
     await new Promise((r) => setTimeout(r, 0))
-    expect(api.getNote).toHaveBeenCalledTimes(2)
-    expect(wrapper.find('[data-testid="conflict-placeholder"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="conflict-dialog"]').exists()).toBe(false)
+    // The server note is adopted as local truth.
+    expect(wrapper.get('[data-testid="note-modified"]').text()).toBe('2026-11-07T14:00:00Z')
+    expect(wrapper.findComponent(ElSelect).props('modelValue')).toBe('done')
+    // The refused patch was the only write: take-server never resends.
+    expect(api.patchNote).toHaveBeenCalledTimes(1)
+    wrapper.unmount()
   })
 
   it('Esc returns to the list', async () => {
@@ -394,7 +406,7 @@ describe('edit mode', () => {
     wrapper.unmount()
   })
 
-  it('a save conflict keeps edit mode open and shows the conflict surface', async () => {
+  it('a save conflict opens the dialog and keeps my draft', async () => {
     const api = makeApi(makeNote(), {
       kind: 'conflict',
       note: makeNote({ modified: '2026-11-07T14:00:00Z' }),
@@ -404,10 +416,94 @@ describe('edit mode', () => {
     await wrapper.get('[data-testid="entry-text"]').setValue('mine')
     await wrapper.get('[data-testid="entry-save"]').trigger('click')
     await new Promise((r) => setTimeout(r, 0))
-    expect(wrapper.find('[data-testid="conflict-placeholder"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="conflict-dialog"]').exists()).toBe(true)
     // Draft survives: still editing, still my text in the textarea.
     expect(wrapper.find('[data-testid="edit-form"]').exists()).toBe(true)
     expect(textareaValue(wrapper)).toBe('mine')
+    wrapper.unmount()
+  })
+
+  it('take-server adopts the server note and re-seeds the still-open editor', async () => {
+    const server = makeNote({
+      modified: '2026-11-07T14:00:00Z',
+      priority: 3,
+      tags: [{ name: 'agent-x', by: 'agent' }],
+      entries: [
+        { id: 1, ts: '2026-11-07T10:00:00Z', kind: 'text', text: 'server wins' },
+        { id: 2, ts: '2026-11-07T10:05:00Z', kind: 'text', text: 'appended' },
+      ],
+    })
+    const api = makeApi(makeNote(), { kind: 'conflict', note: server })
+    const wrapper = await mountView(api)
+    await wrapper.get('[data-testid="edit-toggle"]').trigger('click')
+    await wrapper.get('[data-testid="entry-text"]').setValue('mine')
+    await wrapper.get('[data-testid="entry-save"]').trigger('click')
+    await new Promise((r) => setTimeout(r, 0))
+    await wrapper.get('[data-testid="conflict-take-server"]').trigger('click')
+    await new Promise((r) => setTimeout(r, 0))
+    expect(wrapper.find('[data-testid="conflict-dialog"]').exists()).toBe(false)
+    // Edit mode stays open, form shows the server's values, not my draft.
+    expect(wrapper.find('[data-testid="edit-form"]').exists()).toBe(true)
+    expect(textareaValue(wrapper)).toBe('server wins')
+    expect(
+      wrapper.findAllComponents(ElTag).map((t) => t.text()).some((x) => x.includes('agent-x')),
+    ).toBe(true)
+    // The refused save was the only write: adopting never re-sends.
+    expect(api.patchNote).toHaveBeenCalledTimes(1)
+    wrapper.unmount()
+  })
+
+  it('use-mine resends the same draft with the server modified and saves', async () => {
+    const api = makeApi(makeNote())
+    const patch = api.patchNote as ReturnType<typeof vi.fn>
+    patch
+      .mockResolvedValueOnce({ kind: 'conflict', note: makeNote({ modified: '2026-11-07T14:00:00Z' }) })
+      .mockResolvedValueOnce({
+        kind: 'ok',
+        note: makeNote({ modified: '2026-11-07T15:00:00Z', priority: 2 }),
+      })
+    const wrapper = await mountView(api)
+    await wrapper.get('[data-testid="edit-toggle"]').trigger('click')
+    await wrapper.get('[data-testid="entry-text"]').setValue('my text')
+    wrapper.findAllComponents(ElInputNumber)[0]!.vm.$emit('update:modelValue', 2)
+    await wrapper.get('[data-testid="entry-save"]').trigger('click')
+    await new Promise((r) => setTimeout(r, 0))
+    await wrapper.get('[data-testid="conflict-use-mine"]').trigger('click')
+    await new Promise((r) => setTimeout(r, 0))
+    expect(api.patchNote).toHaveBeenCalledTimes(2)
+    // The admission of the winner: the server's modified, not my stale one.
+    expect(api.patchNote).toHaveBeenLastCalledWith('01ABC', {
+      base_modified: '2026-11-07T14:00:00Z',
+      entry_edit: { id: 1, text: 'my text' },
+      priority: 2,
+      tags: [{ name: 'groceries', by: 'agent' }],
+    })
+    // DoD: local modified equals the response's; editor closes, saved toasts.
+    expect(wrapper.get('[data-testid="note-modified"]').text()).toBe('2026-11-07T15:00:00Z')
+    expect(wrapper.find('[data-testid="edit-form"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="conflict-dialog"]').exists()).toBe(false)
+    expect(toast).toHaveBeenCalledWith(expect.objectContaining({ message: 'saved' }))
+    wrapper.unmount()
+  })
+
+  it('a third writer reopens the dialog with fresh server data, no retry loop', async () => {
+    const api = makeApi(makeNote())
+    const patch = api.patchNote as ReturnType<typeof vi.fn>
+    patch
+      .mockResolvedValueOnce({ kind: 'conflict', note: makeNote({ modified: '2026-11-07T14:00:00Z' }) })
+      .mockResolvedValueOnce({ kind: 'conflict', note: makeNote({ modified: '2026-11-07T15:00:00Z' }) })
+    const wrapper = await mountView(api)
+    await wrapper.get('[data-testid="edit-toggle"]').trigger('click')
+    await wrapper.get('[data-testid="entry-text"]').setValue('mine')
+    await wrapper.get('[data-testid="entry-save"]').trigger('click')
+    await new Promise((r) => setTimeout(r, 0))
+    expect(wrapper.get('[data-testid="conflict-server"]').text()).toContain('2026-11-07T14:00:00Z')
+    await wrapper.get('[data-testid="conflict-use-mine"]').trigger('click')
+    await new Promise((r) => setTimeout(r, 0))
+    // Same dialog, newer truth, and it stops there: the user decides again.
+    expect(wrapper.find('[data-testid="conflict-dialog"]').exists()).toBe(true)
+    expect(wrapper.get('[data-testid="conflict-server"]').text()).toContain('2026-11-07T15:00:00Z')
+    expect(api.patchNote).toHaveBeenCalledTimes(2)
     wrapper.unmount()
   })
 
