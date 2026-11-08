@@ -15,6 +15,14 @@ vi.mock('vue-router', () => ({
   useRouter: () => ({ push }),
 }))
 
+// Toast assertions need the message object, not the rendered DOM: keep every
+// Element Plus export real but swap the ElMessage callable for a spy.
+const toast = vi.hoisted(() => vi.fn<(opts: unknown) => void>())
+vi.mock('element-plus', async (importOriginal) => {
+  const original = await importOriginal<typeof import('element-plus')>()
+  return { ...original, ElMessage: (opts: unknown) => toast(opts) }
+})
+
 import NoteView from '@/views/NoteView.vue'
 
 function makeNote(over: Partial<Note> = {}): Note {
@@ -52,6 +60,9 @@ function makeApi(note: Note | null, patchResult?: PatchResult): Api {
     ),
     patchNote: vi.fn<(id: string, p: Patch) => Promise<PatchResult>>(() =>
       Promise.resolve(patchResult ?? { kind: 'ok', note: note ?? makeNote() }),
+    ),
+    deleteNote: vi.fn<(id: string) => Promise<{ id: string }>>(() =>
+      Promise.resolve({ id: '01ABC' }),
     ),
   } as unknown as Api
 }
@@ -226,5 +237,39 @@ describe('NoteView', () => {
     expect(push).toHaveBeenCalledWith('/')
     wrapper.unmount()
     detach()
+  })
+
+  it('deletes after confirm: route home first, then the deleted message', async () => {
+    const api = makeApi(makeNote())
+    const wrapper = await mountView(api)
+    await wrapper.get('[data-testid="delete-button"]').trigger('click')
+    await new Promise((r) => setTimeout(r, 0))
+    const confirm = wrapper.get('[data-testid="confirm-delete"]')
+    expect(confirm.text()).toContain('01ABC')
+    await confirm.trigger('click')
+    await new Promise((r) => setTimeout(r, 0))
+    expect(api.deleteNote).toHaveBeenCalledWith('01ABC')
+    expect(push.mock.invocationCallOrder[0]).toBeLessThan(toast.mock.invocationCallOrder[0]!)
+    expect(toast).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'deleted 01ABC', type: 'success' }),
+    )
+    wrapper.unmount()
+  })
+
+  it('a server-side 404 on delete is an info toast, not an error', async () => {
+    const api = makeApi(makeNote())
+    ;(api.deleteNote as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new ApiError(404, 'gone already'),
+    )
+    const wrapper = await mountView(api)
+    await wrapper.get('[data-testid="delete-button"]').trigger('click')
+    await new Promise((r) => setTimeout(r, 0))
+    await wrapper.get('[data-testid="confirm-delete"]').trigger('click')
+    await new Promise((r) => setTimeout(r, 0))
+    expect(push).toHaveBeenCalledWith('/')
+    expect(toast).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'deleted 01ABC', type: 'info' }),
+    )
+    wrapper.unmount()
   })
 })

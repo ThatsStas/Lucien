@@ -12,6 +12,7 @@ import { useAppApi } from '@/api/app-api'
 import { ApiError, type Api } from '@/api/client'
 import type { Note, State } from '@/api/types'
 import { useKeys } from '@/lib/keymap'
+import ConfirmDeleteDialog from '@/components/ConfirmDeleteDialog.vue'
 
 const STATES: State[] = ['inbox', 'todo', 'in_progress', 'done', 'someday', 'archived']
 
@@ -88,6 +89,27 @@ function back(): void {
   router.push('/')
 }
 useKeys({ Escape: back })
+
+// Delete (card web-3 slice 3): confirm dialog first, then deleteNote. A 404
+// means someone already deleted it — same outcome, quieter toast. Other
+// failures keep the note on screen.
+const deleteVisible = ref(false)
+async function confirmDelete(): Promise<void> {
+  const id = props.id
+  deleteVisible.value = false
+  try {
+    await api.deleteNote(id)
+    router.push('/')
+    ElMessage({ message: `deleted ${id}`, type: 'success' })
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 404) {
+      router.push('/')
+      ElMessage({ message: `deleted ${id}`, type: 'info' })
+    } else {
+      ElMessage({ message: 'delete failed', type: 'error' })
+    }
+  }
+}
 </script>
 
 <template>
@@ -118,6 +140,9 @@ useKeys({ Escape: back })
         <time data-testid="note-modified" :datetime="note.modified">{{ note.modified }}</time>
         <ElButton data-testid="reload-button" size="small" @click="load">Reload</ElButton>
         <ElButton data-testid="back-button" size="small" @click="back">Back</ElButton>
+        <ElButton data-testid="delete-button" size="small" type="danger" @click="deleteVisible = true">
+          Delete
+        </ElButton>
       </header>
       <section v-if="conflict" data-testid="conflict-placeholder" class="panel">
         <p>
@@ -146,6 +171,11 @@ useKeys({ Escape: back })
       </ol>
     </template>
     <p v-else data-testid="note-loading">loading…</p>
+    <ConfirmDeleteDialog
+      v-model:visible="deleteVisible"
+      :note-id="note?.id ?? ''"
+      @confirm="confirmDelete"
+    />
   </main>
 </template>
 

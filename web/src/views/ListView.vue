@@ -2,7 +2,7 @@
 // The list screen (card web-2 slice 4): composable + presentational pieces.
 // Card 1's placeholder probe is gone; the composable's mount fetch is the
 // authenticated call the 401 -> toast -> /settings e2e rule exercises.
-import { ElButton } from 'element-plus'
+import { ElButton, ElMessage } from 'element-plus'
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
 
@@ -10,13 +10,16 @@ import NewNoteDialog from '@/components/NewNoteDialog.vue'
 import NoteList from '@/components/NoteList.vue'
 import SearchInput from '@/components/SearchInput.vue'
 import StateFilter from '@/components/StateFilter.vue'
+import ConfirmDeleteDialog from '@/components/ConfirmDeleteDialog.vue'
 import { useAppApi } from '@/api/app-api'
+import { ApiError } from '@/api/client'
 import { useNoteList } from '@/composables/useNoteList'
 import { useKeys } from '@/lib/keymap'
 import { useSettingsStore } from '@/stores/settings'
 
 const settings = useSettingsStore()
-const list = useNoteList(useAppApi(), { getLimit: () => settings.pageSize })
+const api = useAppApi()
+const list = useNoteList(api, { getLimit: () => settings.pageSize })
 const router = useRouter()
 
 const dialogVisible = ref(false)
@@ -33,6 +36,37 @@ function openIndex(index: number): void {
   if (row) router.push(`/n/${row.id}`)
 }
 
+// d opens the shared confirm dialog for the selected row; the row disappears
+// locally on success — the poll never resurrects a deleted note. A 404 is
+// the same local removal with an info toast (card web-3 slice 3).
+const deleteVisible = ref(false)
+const deleteId = ref('')
+
+function askDelete(): void {
+  const row = list.rows.value[list.selected.value]
+  if (row) {
+    deleteId.value = row.id
+    deleteVisible.value = true
+  }
+}
+
+async function confirmDelete(): Promise<void> {
+  const id = deleteId.value
+  deleteVisible.value = false
+  try {
+    await api.deleteNote(id)
+    list.removeRow(id)
+    ElMessage({ message: `deleted ${id}`, type: 'success' })
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 404) {
+      list.removeRow(id)
+      ElMessage({ message: `deleted ${id}`, type: 'info' })
+    } else {
+      ElMessage({ message: 'delete failed', type: 'error' })
+    }
+  }
+}
+
 // j/k clamp at the ends inside the composable. Escape here is the second
 // press of the search clear gesture: the first one blurred the input and
 // stopped at its own handler (FRONTEND-DESIGN.md 7).
@@ -43,6 +77,7 @@ useKeys({
   n: () => {
     dialogVisible.value = true
   },
+  d: askDelete,
   '/': focusSearch,
   Escape: () => {
     if (list.q.value) list.q.value = ''
@@ -77,6 +112,11 @@ useKeys({
       @open="openIndex"
     />
     <NewNoteDialog v-model:visible="dialogVisible" @created="list.refresh()" />
+    <ConfirmDeleteDialog
+      v-model:visible="deleteVisible"
+      :note-id="deleteId"
+      @confirm="confirmDelete"
+    />
   </main>
 </template>
 
