@@ -62,6 +62,71 @@ func rawFile(t *testing.T, path string) map[string]any {
 	return m
 }
 
+// TestMalformedIDsCannotEscapeNotesDir pins the security contract: ids are
+// ULIDs, and every id-taking operation must treat anything else as "no such
+// note" instead of letting filepath.Join walk out of notes_dir. The canary
+// file one level above the repo proves the read actually left the sandbox.
+func TestMalformedIDsCannotEscapeNotesDir(t *testing.T) {
+	s, _, _, _ := testStore(t)
+	// Canary: a valid note JSON living OUTSIDE notes_dir, carrying the
+	// exact id a traversal attack would send (Read checks n.ID == id, so
+	// the leak only completes when the file matches — that is the case
+	// this test pins shut).
+	parent := filepath.Dir(s.dir)
+	secret := Note{
+		ID:       "../secret",
+		Created:  s.Now(), Modified: s.Now(), State: "inbox", StateChangedAt: s.Now(),
+		Tags: []Tag{}, Source: Source{Kind: "text"},
+		Entries:    []Entry{{ID: 1, TS: s.Now(), Kind: "text", Text: "CANARY top secret"}},
+		Processing: Processing{Step: StepNone, Status: StatusPending},
+		Dedup:      Dedup{Resaved: []time.Time{}, ContentHash: "sha256:canary"},
+	}
+	data, err := json.Marshal(secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(parent, "secret.json"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	bad := []string{"", ".", "..", ".hidden", "../secret", "..%2Fsecret",
+		"../../" + filepath.Base(parent) + "/secret", "not-a-ulid",
+		"01M6VV4AJGWTVKJ3HKRJW788E", "01M6VV4AJGWTVKJ3HKRJW788ESX",
+		"01M6VV4AJGWTVKJ3HKRJW788/S", "01M6VV4AJGWTVKJ3HKRJW788ES.json",
+		string(filepath.Separator) + "secret"}
+	for _, id := range bad {
+		if _, err := s.Read(id); !errors.Is(err, ErrNotFound) {
+			t.Errorf("Read(%q): want ErrNotFound, got %v", id, err)
+		}
+		if _, err := s.AppendText(id, "x"); !errors.Is(err, ErrNotFound) {
+			t.Errorf("AppendText(%q): want ErrNotFound, got %v", id, err)
+		}
+		if _, err := s.AppendAudio(id, strings.NewReader("bytes"), "m4a"); !errors.Is(err, ErrNotFound) {
+			t.Errorf("AppendAudio(%q): want ErrNotFound, got %v", id, err)
+		}
+		if _, err := s.Edit(id, Patch{}, s.Now()); !errors.Is(err, ErrNotFound) {
+			t.Errorf("Edit(%q): want ErrNotFound, got %v", id, err)
+		}
+		if err := s.Delete(id); !errors.Is(err, ErrNotFound) {
+			t.Errorf("Delete(%q): want ErrNotFound, got %v", id, err)
+		}
+		if _, err := s.Claim(id); !errors.Is(err, ErrNotFound) {
+			t.Errorf("Claim(%q): want ErrNotFound, got %v", id, err)
+		}
+	}
+	// Nothing may be written outside notes_dir: the traversal append
+	// attempts must not have staged a buffer next to the canary.
+	if _, err := os.Stat(filepath.Join(parent, "secret.1.m4a")); err == nil {
+		t.Error("AppendAudio wrote a buffer file outside notes_dir")
+	}
+
+	// A real id still works (the fix must not reject valid ULIDs).
+	n := mustCreateText(t, s, "legit")
+	if _, err := s.Read(n.ID); err != nil {
+		t.Errorf("Read(valid id) failed: %v", err)
+	}
+}
+
 func TestCreateTextNote_WritesSchemaFileAndCommits(t *testing.T) {
 	s, vcs, idx, _ := testStore(t)
 	n := mustCreateText(t, s, "hello world")

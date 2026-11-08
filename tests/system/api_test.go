@@ -667,7 +667,7 @@ func TestReindexAdmin(t *testing.T) {
 
 	// Plant a note file that never passed through the store: the file is
 	// truth, the index must be rebuilt to see it.
-	plant(b, t, "01PLANTED000000000000000", "orphan file")
+	plant(b, t, "01TESTTESTTESTTESTTESTTEST", "orphan file") // a real ULID shape: ids are validated on read
 	code, data := b.get("/v1/notes")
 	if total := decodeMap(t, data)["total"].(float64); total != 1 {
 		t.Fatalf("stale index should not show the orphan yet: %v", total)
@@ -713,5 +713,49 @@ func plant(b *backend, t *testing.T, id, text string) {
 	data, _ := json.MarshalIndent(note, "", "  ")
 	if err := os.WriteFile(filepath.Join(b.notesDir, id+".json"), data, 0o600); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestTraversalIDCannotEscapeNotesDir is the security regression: note ids
+// become filenames, so a request like GET /v1/notes/..%2Fsecret must never
+// resolve outside notes_dir. Before the id-shape fix an encoded traversal
+// read any *.json whose id field matched, and distinguished "exists" from
+// "absent" by 500 vs 404.
+func TestTraversalIDCannotEscapeNotesDir(t *testing.T) {
+	b := startBackend(t)
+	// Canary: a schema-valid note JSON one level ABOVE notes_dir, whose
+	// id field matches the traversal id the attack would send.
+	now := time.Now().UTC().Truncate(time.Second).Format(time.RFC3339)
+	note := map[string]any{
+		"id": "../secret", "created": now, "modified": now,
+		"state": "inbox", "state_changed_at": now,
+		"tags": []any{}, "priority": 0,
+		"source": map[string]any{"kind": "text", "url": nil},
+		"entries": []any{map[string]any{"id": 1, "ts": now, "kind": "text", "text": "CANARY top secret"}},
+		"processing": map[string]any{"step": "none", "status": "pending",
+			"retry_count": 0, "next_retry_at": nil, "last_error": nil},
+		"remind_at": nil, "defer_until": nil,
+		"dedup": map[string]any{"url_hash": nil, "content_hash": "sha256:x", "resaved": []any{}},
+	}
+	data, _ := json.MarshalIndent(note, "", "  ")
+	if err := os.WriteFile(filepath.Join(b.dir, "secret.json"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, id := range []string{"..%2Fsecret", "%2e%2e%2Fsecret",
+		"..%2F..%2Fetc%2Fmachine-id", "..%2F..%2Fhome%2Fbloodsurfer%2Fnote"} {
+		code, body := b.do("GET", "/v1/notes/"+id, nil, "", true)
+		if code != http.StatusNotFound {
+			t.Errorf("GET /v1/notes/%s: want 404, got %d (%s)", id, code, body)
+		}
+		if strings.Contains(string(body), "CANARY") {
+			t.Errorf("GET /v1/notes/%s leaked the canary file", id)
+		}
+	}
+
+	// Valid ids still round-trip.
+	code, _ := b.do("POST", "/v1/notes", strings.NewReader(`{"text":"legit"}`), "application/json", true)
+	if code != http.StatusCreated {
+		t.Fatalf("control create: got %d", code)
 	}
 }

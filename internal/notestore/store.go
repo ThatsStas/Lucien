@@ -186,7 +186,14 @@ func (s *Store) Create(req CreateRequest) (*Note, error) {
 
 // --- Read -------------------------------------------------------------------
 
+// Read loads a note by id. Ids are ULIDs by contract, and they become
+// filenames: anything that is not a well-formed ULID can never name a note
+// and must not reach filepath.Join (path traversal guard). Every other
+// id-taking operation funnels through Read, making this the single gate.
 func (s *Store) Read(id string) (*Note, error) {
+	if _, err := ulid.Parse(id); err != nil {
+		return nil, fmt.Errorf("%w: %s", ErrNotFound, id)
+	}
 	data, err := os.ReadFile(s.notePath(id))
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
