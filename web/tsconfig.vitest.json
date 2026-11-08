@@ -8,8 +8,9 @@
 
   "compilerOptions": {
     // Vitest runs in a different environment than the application code.
-    // Adjust lib and types accordingly.
-    "lib": [],
+    // Adjust lib and types accordingly. (Not empty: specs import app and
+    // harness modules whose types need the modern lib, e.g. Error cause.)
+    "lib": ["ES2024", "DOM"],
     "types": ["node", "jsdom"],
 
     // `vue-tsc --build` produces a .tsbuildinfo file for incremental type-checking.

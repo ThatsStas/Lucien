@@ -1,6 +1,8 @@
 import process from 'node:process'
 import { defineConfig, devices } from '@playwright/test'
 
+import { BACKEND_PORT } from './tests/e2e/server/global-setup'
+
 /**
  * Read environment variables from file.
  * https://github.com/motdotla/dotenv
@@ -12,6 +14,7 @@ import { defineConfig, devices } from '@playwright/test'
  */
 export default defineConfig({
   testDir: './tests/e2e',
+  globalSetup: './tests/e2e/server/global-setup.ts',
   /* Maximum time one test can run for. */
   timeout: 30 * 1000,
   expect: {
@@ -59,8 +62,10 @@ export default defineConfig({
   /* Run the production preview before tests (FRONTEND-DESIGN.md 10): e2e
      exercises the built artifact, not the dev server. */
   webServer: {
-    command: 'pnpm build-only && pnpm exec vite preview --host 127.0.0.1 --port 4173 --strictPort',
+    // VITE_E2E_BACKEND_PORT points the preview proxy at the harness backend
+    // (vite.config.ts); a manual `pnpm preview` still targets 8188.
+    command: `pnpm build-only && VITE_E2E_BACKEND_PORT=${BACKEND_PORT} pnpm exec vite preview --host 127.0.0.1 --port 4173 --strictPort`,
     url: 'http://127.0.0.1:4173',
-    reuseExistingServer: !process.env.CI,
+    reuseExistingServer: false,
   },
 })
