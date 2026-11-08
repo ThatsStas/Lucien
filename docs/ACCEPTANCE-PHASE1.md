@@ -148,3 +148,35 @@ Links, YouTube, tagging, embeddings, related, merge, retag, ribbon
 ingest, reminders surfacing, trash GC, push cron, TLS termination
 (fields accepted, unused), `/retry`, LLM adapters. No code beyond the
 chain-table shape and schema "prepares" for them.
+
+## 6. Post-acceptance addenda (2026-11-08)
+
+Two pieces of work landed after §1–5, both TDD (RED → GREEN → full suite
+`-race` green → one commit each):
+
+- **`--debug` flag + failure-mode logging** (`c3f2f49`, `92ec204`,
+  `661b07a`, `12ccce3`). The user-facing contract and redaction
+  guarantees are README §Logging policy. Key decisions: auth bounces
+  WARN the reason (`missing_header` / `malformed_header` /
+  `unknown_token`) plus method/path/remote and never the credential;
+  one debug access line per request via a statusWriter capturing
+  status+reason at the `jsonOut`/`jsonErr` choke points; whisper
+  failures WARN `status`+`retryable` with response SIZES only — error
+  snippets live in the note's `last_error` (served by the API), not in
+  the log; git init/add/commit failures ERROR with the git output,
+  no-op commits a debug skip; worker wake/sleep/skip reasons and pass
+  counts at debug; reindex answers with an INFO receipt. Deliberately
+  NO HTTP recover middleware: the stdlib server already dumps panics
+  to stderr and every route is pure, so a wrapper would be untestable
+  glue.
+- **Path-traversal security fix** (`4e4238d`). Found while building the
+  logging slice: `GET /v1/notes/..%2Fsecret` with a note `id` field
+  matching the traversal target returned files OUTSIDE `notes_dir`
+  (confirmed exploitable with a canary before fixing), `AppendAudio`
+  could write outside it, and a 500-vs-404 difference leaked file
+  existence. Fixed at the single choke point — `Store.Read` requires
+  `ulid.Parse(id)`, so every id-taking method inherits the gate;
+  malformed ids 404 exactly like unknown notes. Buffer-name paths were
+  already `filepath.Base`-safe. Pinned by canary regressions in the
+  store seam (`TestMalformedIDsCannotEscapeNotesDir`) and the system
+  seam (`TestTraversalIDCannotEscapeNotesDir`).

@@ -1,73 +1,56 @@
-# web
+# Lucien web UI
 
-This template should help get you started developing with Vue 3 in Vite.
+The web frontend for the Lucien notes backend (Vue 3 + TypeScript). The
+normative design is [`docs/FRONTEND-DESIGN.md`](../docs/FRONTEND-DESIGN.md)
+(HTTP contract, decisions ledger, three-layer rule, keymap, Element Plus
+containment, test infrastructure); the build is driven by
+[`docs/cards/web-1…web-6`](../docs/cards/), one card per face.
 
-## Recommended IDE Setup
+Stack: Vue 3, vue-router, Pinia, Element Plus, Vite. Unit tests: Vitest.
+End-to-end: Playwright against the REAL backend binary and `stub_whisper`
+— no mocks. Package manager: pnpm.
 
-[VS Code](https://code.visualstudio.com/) + [Vue (Official)](https://marketplace.visualstudio.com/items?itemName=Vue.volar) (and disable Vetur).
-
-## Recommended Browser Setup
-
-- Chromium-based browsers (Chrome, Edge, Brave, etc.):
-  - [Vue.js devtools](https://chromewebstore.google.com/detail/vuejs-devtools/nhdogjmejiglipccpnnnanhbledajbpd)
-  - [Turn on Custom Object Formatter in Chrome DevTools](http://bit.ly/object-formatters)
-- Firefox:
-  - [Vue.js devtools](https://addons.mozilla.org/en-US/firefox/addon/vue-js-devtools/)
-  - [Turn on Custom Object Formatter in Firefox DevTools](https://fxdx.dev/firefox-devtools-custom-object-formatters/)
-
-## Type Support for `.vue` Imports in TS
-
-TypeScript cannot handle type information for `.vue` imports by default, so we replace the `tsc` CLI with `vue-tsc` for type checking. In editors, we need [Volar](https://marketplace.visualstudio.com/items?itemName=Vue.volar) to make the TypeScript language service aware of `.vue` types.
-
-## Customize configuration
-
-See [Vite Configuration Reference](https://vite.dev/config/).
-
-## Project Setup
+## Run it
 
 ```sh
 pnpm install
+pnpm dev            # http://127.0.0.1:5173
 ```
 
-### Compile and Hot-Reload for Development
+Both `dev` and `preview` proxy `/v1` to the backend at
+`http://127.0.0.1:8188` (FRONTEND-DESIGN.md 3), so start the backend
+first (`../README.md#run`). No app code may reference an origin — the
+proxy is the only place the backend lives. On first paint the bootstrap
+guard routes to Settings until a server URL + token are saved; settings
+(token, server URL, page size, theme) persist in a single localStorage
+key and survive a corrupt store without crashing first paint.
 
-```sh
-pnpm dev
-```
+## Commands
 
-### Type-Check, Compile and Minify for Production
+| Command | What it does |
+| --- | --- |
+| `pnpm dev` | Vite dev server with `/v1` proxy |
+| `pnpm build` | `type-check` + production build into `dist/` |
+| `pnpm test:unit` | Vitest unit/component suite (jsdom) |
+| `pnpm test:e2e` | Playwright suite (see below) |
+| `pnpm lint` / `pnpm format` | oxlint + eslint / prettier |
 
-```sh
-pnpm build
-```
+## End-to-end tests
 
-### Run Unit Tests with [Vitest](https://vitest.dev/)
+`pnpm test:e2e` runs the full stack for real
+(`tests/e2e/server/global-setup.ts`): it builds the Go backend and
+`stub_whisper` from source, boots them on fixed ports — backend `18188`,
+stub whisper `18191` — serves the built frontend on preview port `4173`,
+and tears everything down afterwards. The e2e token is hashed inside the
+harness and never committed. Because the suite is single-worker and owns
+those ports, stop anything holding `18188`/`18191`/`4173` first (e.g. a
+manually started backend on 8188 is fine; those three must be free).
 
-```sh
-pnpm test:unit
-```
+## Status
 
-### Run End-to-End Tests with [Playwright](https://playwright.dev)
-
-```sh
-# Install browsers for the first run
-npx playwright install
-
-# When testing on CI, must build the project first
-pnpm build
-
-# Runs the end-to-end tests
-pnpm test:e2e
-# Runs the tests only on Chromium
-pnpm test:e2e --project=chromium
-# Runs the tests of a specific file
-pnpm test:e2e tests/example.spec.ts
-# Runs the tests in debug mode
-pnpm test:e2e --debug
-```
-
-### Lint with [ESLint](https://eslint.org/)
-
-```sh
-pnpm lint
-```
+Cards `web-1` (scaffold, settings, typed API client), `web-2` (list:
+filters, search, quick create, keymap), `web-3` (detail: view, state
+transitions, delete-to-trash, processing badges) and `web-4` (editing:
+entry text, human tags, priority, 409 merge dialog) are done, each
+committed green with unit and e2e coverage. `web-5` (audio upload with
+transcription polling) and `web-6` (refactor + acceptance) are pending.

@@ -1,16 +1,27 @@
-# Lucien — notes backend
+# Lucien — notes backend + web UI
 
-Self-hosted REST backend for GTD-style notes. Notes are self-contained JSON
+Self-hosted REST backend for GTD-style notes, with a Vue web frontend.
+Notes are self-contained JSON
 files in a git repository; slow work (transcription, extraction, tagging,
 embedding) runs in an in-process worker. The normative design lives in
-[`docs/DESIGN.md`](docs/DESIGN.md); the working method in
+[`docs/DESIGN.md`](docs/DESIGN.md); the frontend design in
+[`docs/FRONTEND-DESIGN.md`](docs/FRONTEND-DESIGN.md); the working method in
 [`docs/IMPLEMENTATION-FRAMEWORK.md`](docs/IMPLEMENTATION-FRAMEWORK.md);
-per-phase work in [`docs/cards/`](docs/cards/).
+per-phase work in [`docs/cards/`](docs/cards/). The handoff bundle guide is
+[`docs/README.md`](docs/README.md).
 
 ## Status
 
-Phase 1 (MVP) in progress: schema, Note Store + git, auth, notes CRUD, index
-filters, worker with the transcription pipeline.
+Backend Phase 1 (MVP) complete: schema, Note Store + git, auth, notes CRUD,
+index filters, worker with the transcription pipeline, `--debug` logging
+(see [Logging policy](#logging-policy)). Phases 2–4 (LLM extraction/tagging,
+embeddings/dedup, reminders/hardening) are pending — see
+[`docs/cards/`](docs/cards/).
+
+Web frontend: cards `web-1`–`web-4` done (settings + API client, list with
+filters/search/quick-create + keymap, detail with state transitions and
+delete-to-trash, editing with 409 merge dialog). `web-5` (audio upload) and
+`web-6` (refactor + acceptance) are pending — see [`web/README.md`](web/README.md).
 
 ## Build & test
 
@@ -24,6 +35,22 @@ The system tests boot the real binary and `stub_whisper` on ephemeral
 ports; no live network is touched. The stub speaks the whisper multipart
 contract, records requests (`GET /__requests`) and switches failure mode
 at runtime (`POST /__mode {"mode":"ok|error500|error422|refuse|delay"}`).
+
+## Web UI
+
+The frontend lives in [`web/`](web/) (Vue 3 + TypeScript + Element Plus,
+pnpm). Quickstart:
+
+```sh
+cd web
+pnpm install
+pnpm dev        # proxies /v1 to the backend on 127.0.0.1:8188 — start it first
+```
+
+`pnpm test:unit` runs Vitest; `pnpm test:e2e` runs Playwright against the
+real binary + `stub_whisper` (the harness builds and boots both itself on
+ports 18188/18191/4173, which must be free). Full details, command
+reference and card status: [`web/README.md`](web/README.md).
 
 ## Configure
 
