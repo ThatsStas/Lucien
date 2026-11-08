@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -27,13 +28,50 @@ const version = "dev"
 
 func main() {
 	configPath := flag.String("config", "lucien.toml", "path to TOML config")
+	debug := flag.Bool("debug", false, "verbose logs: every request, auth decision, whisper call and worker cycle")
 	flag.Parse()
 
-	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	log := NewLogger(*debug)
+	if *debug {
+		log.Info("debug logging enabled")
+	}
 	if err := run(*configPath, log); err != nil {
 		log.Error("fatal", "err", err)
 		os.Exit(1)
 	}
+}
+
+// NewLogger builds the process logger. Default level shows what happened
+// (INFO) and everything wrong (WARN/ERROR); --debug additionally shows the
+// mechanics: per-request access lines, auth decisions, whisper calls and
+// worker sleep/wake cycles.
+func NewLogger(debug bool) *slog.Logger {
+	opts := &slog.HandlerOptions{}
+	if debug {
+		opts.Level = slog.LevelDebug
+	}
+	return slog.New(slog.NewTextHandler(os.Stderr, opts))
+}
+
+// logResolvedConfig dumps the effective configuration at debug level so a
+// "why is it doing THAT" report can be answered from the log alone. Client
+// names are printed; token hashes never are (they are the secrets).
+func logResolvedConfig(log *slog.Logger, cfg *config.Config) {
+	names := make([]string, 0, len(cfg.Clients))
+	for _, c := range cfg.Clients {
+		names = append(names, c.Name)
+	}
+	log.Debug("resolved config",
+		"bind", cfg.Bind, "port", cfg.Port,
+		"notes_dir", cfg.NotesDir, "index_path", cfg.IndexPath,
+		"whisper_url", cfg.WhisperURL, "whisper_language", cfg.WhisperLanguage,
+		"clients", strings.Join(names, ","),
+		"max_retries", cfg.MaxRetries,
+		"backoff", fmt.Sprintf("%ds*%d^n capped %ds", cfg.BackoffBaseSeconds, cfg.BackoffFactor, cfg.BackoffCapSeconds),
+		"worker_idle_poll_seconds", cfg.WorkerIdlePollSeconds,
+		"trash_retention_days", cfg.TrashRetentionDays,
+		"max_upload_mb", cfg.MaxUploadMB,
+	)
 }
 
 func run(configPath string, log *slog.Logger) error {
@@ -42,6 +80,7 @@ func run(configPath string, log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	logResolvedConfig(log, cfg)
 	idx, err := index.Open(cfg.IndexPath)
 	if err != nil {
 		return err
@@ -63,6 +102,7 @@ func run(configPath string, log *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("listen %s:%d: %w", cfg.Bind, cfg.Port, err)
 	}
+	log.Debug("listening", "local_addr", ln.Addr().String())
 	// The harness contract: announce the bound port on stderr (port 0 in
 	// config means ephemeral). 0.0.0.0/:: bind every interface, so
 	// 127.0.0.1 is an honest announcement.
@@ -74,6 +114,8 @@ func run(configPath string, log *slog.Logger) error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 	w.Start(ctx)
 
 	serveErr := make(chan error, 1)
@@ -81,16 +123,23 @@ func run(configPath string, log *slog.Logger) error {
 	select {
 	case err := <-serveErr:
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
-			return err
+			return fmt.Errorf("serve: %w", err)
 		}
 	case <-ctx.Done():
-		log.Info("shutting down")
+		sig := "unknown"
+		select {
+		case s := <-sigCh:
+			sig = s.String()
+		default:
+		}
+		log.Info("shutdown signal received", "signal", sig)
 		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if err := httpSrv.Shutdown(shutCtx); err != nil {
 			log.Error("shutdown", "err", err)
 		}
 		w.Stop()
+		log.Debug("worker loop stopped")
 	}
 	return nil
 }

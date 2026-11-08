@@ -46,6 +46,15 @@ with geometric backoff and boot recovery — a note left `running` by a
 crashed process is re-armed to `pending` at startup, and audio buffers
 survive until their transcript is committed.
 
+Add `-debug` for verbose mechanics: the resolved config dump, one access
+line per HTTP request, auth decisions, whisper calls and worker
+sleep/wake cycles. Default level already shows every state transition
+(INFO) and everything broken (WARN/ERROR).
+
+```sh
+./lucien -config config.local.toml -debug
+```
+
 ## Exercise (smoke)
 
 ```sh
