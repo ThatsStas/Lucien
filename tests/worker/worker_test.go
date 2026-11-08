@@ -6,12 +6,15 @@
 package worker_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -36,6 +39,15 @@ type env struct {
 
 func newEnv(t *testing.T, mode string) *env {
 	t.Helper()
+	e, _ := newEnvWith(t, mode, nil)
+	return e
+}
+
+// newEnvWith additionally captures every slog line the store and worker
+// emit (at the given level) so logging assertions can read them.
+// nil level keeps the old nil-logger behavior for non-logging tests.
+func newEnvWith(t *testing.T, mode string, lvl *slog.Level) (*env, *captureLog) {
+	t.Helper()
 	base := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 	now := base
 	dir := t.TempDir()
@@ -44,8 +56,14 @@ func newEnv(t *testing.T, mode string) *env {
 		t.Fatalf("open index: %v", err)
 	}
 	t.Cleanup(func() { x.Close() })
+	var log *slog.Logger
+	var cap *captureLog
+	if lvl != nil {
+		cap = &captureLog{}
+		log = slog.New(slog.NewTextHandler(cap, &slog.HandlerOptions{Level: *lvl}))
+	}
 	vcs := &notestore.NullVCS{}
-	s := notestore.New(dir, vcs, x, nil)
+	s := notestore.New(dir, vcs, x, log)
 	s.SetClock(func() time.Time { return now })
 	if err := s.Init(); err != nil {
 		t.Fatalf("store init: %v", err)
@@ -66,8 +84,8 @@ func newEnv(t *testing.T, mode string) *env {
 		MaxRetries:            10,
 		WorkerIdlePollSeconds: 1,
 	}
-	w := worker.New(s, x, cfg, nil)
-	return &env{store: s, idx: x, vcs: vcs, w: w, now: &now, stub: stub, cfg: cfg}
+	w := worker.New(s, x, cfg, log)
+	return &env{store: s, idx: x, vcs: vcs, w: w, now: &now, stub: stub, cfg: cfg}, cap
 }
 
 func (e *env) advance(d time.Duration) { *e.now = e.now.Add(d) }
@@ -558,4 +576,215 @@ func TestLostSignalDegradesToIdlePoll(t *testing.T) {
 		got, err := e.store.Read(n.ID)
 		return err == nil && got.Processing.Step == notestore.StepEmbed
 	})
+}
+
+// --- failure-mode logging (DESIGN.md 13) -------------------------------------
+
+// captureLog is a goroutine-safe slog sink: the worker loop logs from its
+// own goroutine while the test reads.
+type captureLog struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (c *captureLog) Write(p []byte) (int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.b.Write(p)
+}
+
+func (c *captureLog) String() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.b.String()
+}
+
+func (c *captureLog) reset() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.b.Reset()
+}
+
+func (c *captureLog) lines(substr string) []string {
+	var out []string
+	for _, l := range strings.Split(c.String(), "\n") {
+		if strings.Contains(l, substr) {
+			out = append(out, l)
+		}
+	}
+	return out
+}
+
+func lvl(l slog.Level) *slog.Level { return &l }
+
+// TestWhisperFailureModesLogged: every whisper failure gets one WARN naming
+// the mode (transport / 5xx / 4xx) and whether it was retryable — visible
+// WITHOUT debug, because a stuck note is an operator event. The response
+// BODY and the audio bytes never appear in logs.
+func TestWhisperFailureModesLogged(t *testing.T) {
+	e, lg := newEnvWith(t, "error500", lvl(slog.LevelInfo))
+	e.createAudio(t, "clip")
+	e.w.Pass(context.Background())
+
+	warns := lg.lines("whisper call failed")
+	if len(warns) != 1 {
+		t.Fatalf("one whisper WARN, got %d:\n%s", len(warns), lg.String())
+	}
+	for _, want := range []string{"level=WARN", "status=500", "retryable=true", "bytes=", "dur_ms=", "url="} {
+		if !strings.Contains(warns[0], want) {
+			t.Errorf("5xx WARN missing %q: %s", want, warns[0])
+		}
+	}
+	// The client's own failure line carries size only — no body. (The
+	// note's last_error, logged by the store and served via the API, may
+	// hold a snippet: it is a diagnostic, not user content.)
+	if strings.Contains(warns[0], "stub internal error") {
+		t.Errorf("whisper response body must not appear in client lines: %s", warns[0])
+	}
+	if strings.Contains(lg.String(), "AUDIO:clip") {
+		t.Error("audio bytes must never be logged")
+	}
+	// Store completes the story: the retry is scheduled (INFO).
+	if len(lg.lines("retry scheduled")) != 1 {
+		t.Errorf("one retry-scheduled line:\n%s", lg.String())
+	}
+
+	// Permanent mode: 422 on the second attempt.
+	e.advance(30 * time.Second)
+	setStubMode(t, e.stub, "error422")
+	e.w.Pass(context.Background())
+
+	warns = lg.lines("whisper call failed")
+	if len(warns) != 2 {
+		t.Fatalf("two whisper WARNs, got %d:\n%s", len(warns), lg.String())
+	}
+	if !strings.Contains(warns[1], "status=422") || !strings.Contains(warns[1], "retryable=false") {
+		t.Errorf("4xx WARN must name status and non-retryability: %s", warns[1])
+	}
+	if len(lg.lines("step failed permanently")) != 1 {
+		t.Errorf("one permanent-failure WARN from store:\n%s", lg.String())
+	}
+}
+
+// TestWhisperTransportFailureLogged: a dead/stuck endpoint (refuse mode
+// hangs up mid-connection) surfaces as a retryable WARN with the transport
+// error, not a silent retry.
+func TestWhisperTransportFailureLogged(t *testing.T) {
+	e, lg := newEnvWith(t, "ok", lvl(slog.LevelInfo))
+	setStubMode(t, e.stub, "refuse")
+	e.createAudio(t, "clip")
+	e.w.Pass(context.Background())
+
+	warns := lg.lines("whisper call failed")
+	if len(warns) != 1 {
+		t.Fatalf("one transport-failure WARN, got %d:\n%s", len(warns), lg.String())
+	}
+	for _, want := range []string{"level=WARN", "status=0", "retryable=true", "err=", "url="} {
+		if !strings.Contains(warns[0], want) {
+			t.Errorf("transport WARN missing %q: %s", want, warns[0])
+		}
+	}
+	if len(lg.lines("retry scheduled")) != 1 {
+		t.Errorf("one retry-scheduled line:\n%s", lg.String())
+	}
+}
+
+// TestWhisperSuccessMechanicsAtDebug: with debug, each call logs the request
+// (url, file, size, whether language was sent) and the response (status,
+// size, duration) — and never the transcript text or audio bytes.
+func TestWhisperSuccessMechanicsAtDebug(t *testing.T) {
+	e, lg := newEnvWith(t, "ok", lvl(slog.LevelDebug))
+	e.createAudio(t, "clip")
+	e.w.Pass(context.Background())
+
+	req := lg.lines("msg=\"whisper request\"")
+	if len(req) != 1 {
+		t.Fatalf("one request line, got %d:\n%s", len(req), lg.String())
+	}
+	for _, want := range []string{"url=", "file=", "bytes=", "language=omit"} {
+		if !strings.Contains(req[0], want) {
+			t.Errorf("request line missing %q: %s", want, req[0])
+		}
+	}
+	resp := lg.lines("msg=\"whisper response\"")
+	if len(resp) != 1 {
+		t.Fatalf("one response line, got %d:\n%s", len(resp), lg.String())
+	}
+	for _, want := range []string{"status=200", "bytes=", "dur_ms="} {
+		if !strings.Contains(resp[0], want) {
+			t.Errorf("response line missing %q: %s", want, resp[0])
+		}
+	}
+	if strings.Contains(lg.String(), "stub transcript") {
+		t.Error("transcript text must never be logged")
+	}
+	if strings.Contains(lg.String(), "AUDIO:clip") {
+		t.Error("audio bytes must never be logged")
+	}
+}
+
+// TestWorkerLoopMechanicsAtDebug: the event loop says WHY it woke (store
+// signal vs idle timer vs shutdown) and how long it slept — debug-only
+// mechanics that answer "why is the worker slow" without guessing.
+func TestWorkerLoopMechanicsAtDebug(t *testing.T) {
+	e, lg := newEnvWith(t, "ok", lvl(slog.LevelDebug))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	e.w.Start(ctx)
+
+	poll(t, 5*time.Second, "first idle sleep", func() bool {
+		return len(lg.lines("worker idle sleep")) > 0
+	})
+	if !strings.Contains(lg.lines("worker idle sleep")[0], "delay_ms=") {
+		t.Errorf("idle sleep must state its delay: %s", lg.lines("worker idle sleep")[0])
+	}
+
+	e.createAudio(t, "loop clip") // store mutation signals the worker
+	poll(t, 15*time.Second, "store-signal wake and a run", func() bool {
+		wakes := lg.lines("worker wake")
+		passes := lg.lines("worker pass")
+		ran1 := false
+		for _, p := range passes {
+			if strings.Contains(p, "ran=1") {
+				ran1 = true
+			}
+		}
+		woke := false
+		for _, wk := range wakes {
+			if strings.Contains(wk, "reason=wake") {
+				woke = true
+			}
+		}
+		return woke && ran1
+	})
+
+	e.w.Stop()
+	if len(lg.lines("worker loop stop")) != 1 ||
+		!strings.Contains(lg.lines("worker loop stop")[0], "reason=shutdown") {
+		t.Errorf("loop must log shutdown reason:\n%s", lg.String())
+	}
+}
+
+// TestPassSkipReasonAtDebug: a discovered note that cannot be worked names
+// its reason (no_pipeline) instead of vanishing silently from the pass.
+func TestPassSkipReasonAtDebug(t *testing.T) {
+	e, lg := newEnvWith(t, "ok", lvl(slog.LevelDebug))
+	n := e.createAudio(t, "clip")
+	e.w.Pass(context.Background()) // transcribe → step=tag pending
+
+	lg.reset()
+	e.w.Pass(context.Background()) // tag has no pipeline: skipped
+
+	skips := lg.lines("worker skip")
+	if len(skips) != 1 {
+		t.Fatalf("one skip line, got %d:\n%s", len(skips), lg.String())
+	}
+	if !strings.Contains(skips[0], "id="+n.ID) || !strings.Contains(skips[0], "reason=no_pipeline") {
+		t.Errorf("skip must name id and reason: %s", skips[0])
+	}
+	passes := lg.lines("worker pass")
+	if len(passes) != 1 || !strings.Contains(passes[0], "discovered=1") ||
+		!strings.Contains(passes[0], "ran=0") {
+		t.Errorf("pass must report discovered/ran counts: %v", passes)
+	}
 }

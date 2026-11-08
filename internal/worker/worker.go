@@ -73,6 +73,7 @@ func New(store *notestore.Store, idx *index.Index, cfg *config.Config, log *slog
 		url:      cfg.WhisperURL,
 		language: cfg.WhisperLanguage,
 		client:   &http.Client{Timeout: whisperTimeout},
+		log:      log,
 	}
 	// Phase 1 registers the transcribe pipeline only. tag/embed stay
 	// pending and are skipped (design gap, DoD report).
@@ -187,9 +188,13 @@ func (w *Worker) loop(ctx context.Context) {
 			continue // something moved: there may be more, check again now
 		}
 		delay := time.Duration(w.cfg.WorkerIdlePollSeconds) * time.Second
-		if next, err := w.idx.EarliestRetry(w.store.Now()); err != nil {
+		var next *time.Time
+		if due, err := w.idx.EarliestRetry(w.store.Now()); err != nil {
 			w.log.Error("worker: retry deadline query failed", "err", err)
-		} else if next != nil {
+		} else {
+			next = due
+		}
+		if next != nil {
 			if d := time.Until(*next); d < delay {
 				delay = d
 			}
@@ -197,13 +202,21 @@ func (w *Worker) loop(ctx context.Context) {
 		if delay < 0 {
 			delay = 0
 		}
+		sleepAttrs := []any{"delay_ms", delay.Milliseconds()}
+		if next != nil {
+			sleepAttrs = append(sleepAttrs, "next_due", *next)
+		}
+		w.log.Debug("worker idle sleep", sleepAttrs...)
 		timer := time.NewTimer(delay)
 		select {
 		case <-w.wake:
 			timer.Stop()
+			w.log.Debug("worker wake", "reason", "wake")
 		case <-timer.C:
+			w.log.Debug("worker wake", "reason", "idle_timer")
 		case <-ctx.Done():
 			timer.Stop()
+			w.log.Debug("worker loop stop", "reason", "shutdown")
 			return
 		}
 	}
@@ -229,8 +242,15 @@ func (w *Worker) Pass(ctx context.Context) int {
 			continue
 		}
 		step, ok := w.pipeline(n.Processing.Step)
-		if !ok || n.Processing.Status != notestore.StatusPending {
-			continue // no pipeline here (phase-1 gap) or not claimable
+		if !ok {
+			w.log.Debug("worker skip", "id", id, "reason", "no_pipeline",
+				"step", string(n.Processing.Step))
+			continue
+		}
+		if n.Processing.Status != notestore.StatusPending {
+			w.log.Debug("worker skip", "id", id, "reason", "not_pending",
+				"status", string(n.Processing.Status))
+			continue
 		}
 		claimed, err := w.store.Claim(id)
 		if err != nil {
@@ -242,6 +262,7 @@ func (w *Worker) Pass(ctx context.Context) int {
 		w.runStep(ctx, claimed, step)
 		ran++
 	}
+	w.log.Debug("worker pass", "discovered", len(ids), "ran", ran)
 	return ran
 }
 
@@ -348,14 +369,27 @@ func (w *Worker) stepTranscribe(ctx context.Context, n *notestore.Note) error {
 
 // whisperClient speaks the OpenAI-compatible transcription contract.
 // Failure classification per DESIGN.md 7.1: transport errors, timeouts and
-// 5xx are retryable plain errors; 4xx wraps ErrPermanent.
+// 5xx are retryable plain errors; 4xx wraps ErrPermanent. Every failure is
+// WARNed with the mode (transport vs status vs malformed) and whether it
+// retries; mechanics are debug. The response BODY is never logged — only
+// its size (last_error carries a snippet through the note, not the log).
 type whisperClient struct {
 	url      string
 	language string // DESIGN default "auto" and "" both omit the field: OpenAI-compatible servers auto-detect only when language is absent (a literal "auto" is rejected, e.g. HTTP 500 "Unsupported language")
 	client   *http.Client
+	log      *slog.Logger
 }
 
 func (c *whisperClient) Transcribe(ctx context.Context, filename string, data []byte) (string, error) {
+	start := time.Now()
+	sent := c.language
+	if sent == "" || sent == "auto" {
+		sent = "omit"
+	}
+	c.log.Debug("whisper request", "url", c.url, "file", filename,
+		"bytes", len(data), "language", sent)
+	dur := func() int64 { return time.Since(start).Milliseconds() }
+
 	var body bytes.Buffer
 	mw := multipart.NewWriter(&body)
 	fw, err := mw.CreateFormFile("file", filename)
@@ -384,17 +418,30 @@ func (c *whisperClient) Transcribe(ctx context.Context, filename string, data []
 	req.Header.Set("Content-Type", mw.FormDataContentType())
 	resp, err := c.client.Do(req) // connection errors and timeouts land here: retryable
 	if err != nil {
+		c.log.Warn("whisper call failed", "url", c.url, "file", filename,
+			"status", 0, "retryable", true, "dur_ms", dur(), "err", err)
 		return "", fmt.Errorf("whisper: %w", err)
 	}
 	defer resp.Body.Close()
 	payload, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
+		c.log.Warn("whisper call failed", "url", c.url, "file", filename,
+			"status", resp.StatusCode, "retryable", true, "dur_ms", dur(),
+			"stage", "reading response", "err", err)
 		return "", fmt.Errorf("whisper: reading response: %w", err)
 	}
+	c.log.Debug("whisper response", "url", c.url, "status", resp.StatusCode,
+		"bytes", len(payload), "dur_ms", dur())
 	switch {
 	case resp.StatusCode >= 500:
+		c.log.Warn("whisper call failed", "url", c.url, "file", filename,
+			"status", resp.StatusCode, "bytes", len(payload),
+			"retryable", true, "dur_ms", dur())
 		return "", fmt.Errorf("whisper: status %d: %s", resp.StatusCode, snippetOf(payload))
 	case resp.StatusCode >= 400:
+		c.log.Warn("whisper call failed", "url", c.url, "file", filename,
+			"status", resp.StatusCode, "bytes", len(payload),
+			"retryable", false, "dur_ms", dur())
 		return "", fmt.Errorf("%w: whisper: status %d: %s", ErrPermanent, resp.StatusCode, snippetOf(payload))
 	}
 	var out struct {
@@ -404,6 +451,9 @@ func (c *whisperClient) Transcribe(ctx context.Context, filename string, data []
 		// A 2xx that is not {"text": ...} is a contract break, but it is
 		// more likely a transient gateway glitch than a permanent note
 		// defect, so it retries until the cap (DoD-flagged).
+		c.log.Warn("whisper call failed", "url", c.url, "file", filename,
+			"status", resp.StatusCode, "bytes", len(payload),
+			"retryable", true, "dur_ms", dur(), "malformed", true)
 		return "", fmt.Errorf("whisper: malformed response (%d bytes): %w", len(payload), err)
 	}
 	return out.Text, nil
