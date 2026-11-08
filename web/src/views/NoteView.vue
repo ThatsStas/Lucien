@@ -20,6 +20,7 @@ import { ApiError, type Api } from '@/api/client'
 import type { Note, State, Tag } from '@/api/types'
 import { useKeys } from '@/lib/keymap'
 import ConfirmDeleteDialog from '@/components/ConfirmDeleteDialog.vue'
+import TagEditor from '@/components/TagEditor.vue'
 
 const STATES: State[] = ['inbox', 'todo', 'in_progress', 'done', 'someday', 'archived']
 
@@ -275,6 +276,7 @@ async function confirmDelete(): Promise<void> {
           <span class="edit-label">Priority</span>
           <ElInputNumber v-model="priorityDraft" :min="0" :max="3" data-testid="priority-input" />
         </div>
+        <TagEditor v-model="tagsDraft" />
         <div class="edit-actions">
           <ElButton data-testid="entry-save" type="primary" :disabled="saving" @click="saveEdit">
             {{ saving ? 'Saving…' : 'Save' }}

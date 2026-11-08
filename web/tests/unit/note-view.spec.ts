@@ -411,6 +411,28 @@ describe('edit mode', () => {
     wrapper.unmount()
   })
 
+  it('tags added in the editor ride the single save patch', async () => {
+    const api = makeApi(makeNote())
+    const wrapper = await mountView(api)
+    await wrapper.get('[data-testid="edit-toggle"]').trigger('click')
+    // The existing agent chip is visible but has no remove affordance.
+    expect(wrapper.find('[data-testid="tag-remove-groceries"]').exists()).toBe(false)
+    await wrapper.get('[data-testid="tag-input"]').setValue('urgent')
+    await wrapper.get('[data-testid="tag-add"]').trigger('click')
+    await wrapper.get('[data-testid="entry-save"]').trigger('click')
+    await new Promise((r) => setTimeout(r, 0))
+    expect(api.patchNote).toHaveBeenCalledWith(
+      '01ABC',
+      expect.objectContaining({
+        tags: [
+          { name: 'groceries', by: 'agent' },
+          { name: 'urgent', by: 'human' },
+        ],
+      }),
+    )
+    wrapper.unmount()
+  })
+
   it('cancel drops the draft without a patch', async () => {
     const api = makeApi(makeNote())
     const wrapper = await mountView(api)
