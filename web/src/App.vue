@@ -1,10 +1,16 @@
 <script setup lang="ts">
+import { onMounted } from 'vue'
 import { RouterView } from 'vue-router'
 
 import { useAppApi } from '@/api/app-api'
 import { useBackendHealth } from '@/composables/useBackendHealth'
+import { attachAppKeymap } from '@/lib/keymap'
 
 const { state } = useBackendHealth(useAppApi())
+
+// One global keydown listener for the whole app (FRONTEND-DESIGN.md 7);
+// views feed it handler tables through useKeys.
+onMounted(attachAppKeymap)
 </script>
 
 <template>

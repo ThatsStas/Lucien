@@ -142,8 +142,10 @@ export function useNoteList(api: Api, opts: UseNoteListOptions = {}) {
       selected.value = clamp(selected.value - 1)
     },
     refresh: fetchFull,
+    // Card web-2 acceptance pins the literal `showing 3 of 3`: the line
+    // shows whenever there are rows, not only when more exist than shown.
     showingLine: computed(() =>
-      total.value > rows.value.length ? `showing ${rows.value.length} of ${total.value}` : '',
+      total.value > 0 ? `showing ${rows.value.length} of ${total.value}` : '',
     ),
   }
 }

@@ -17,12 +17,12 @@ test.describe('settings bootstrap', () => {
     })
 
     await page.getByTestId('settings-back').click()
-    await expect(page.getByText('list ready')).toBeVisible({ timeout: 10_000 })
+    await expect(page.getByTestId('note-list')).toBeVisible({ timeout: 10_000 })
 
     // The store writes on change, so a reload must still be authenticated.
     await page.reload()
     await expect(page).toHaveURL(/\/$/)
-    await expect(page.getByText('list ready')).toBeVisible({ timeout: 10_000 })
+    await expect(page.getByTestId('note-list')).toBeVisible({ timeout: 10_000 })
   })
 
   test('wrong token: inline 401 text, then one toast back to /settings', async ({ page }) => {

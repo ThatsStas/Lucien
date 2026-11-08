@@ -90,7 +90,7 @@ describe('NoteList', () => {
     expect(wrapper.findAll('[role="listitem"]')).toHaveLength(2)
   })
 
-  it('shows the showing X of Y line only when there is more to load', () => {
+  it('renders the showingLine prop verbatim when non-empty', () => {
     expect(mountList().find('[data-testid="list-status"]').exists()).toBe(false)
     const wrapper = mountList({ showingLine: 'showing 2 of 132' })
     expect(wrapper.find('[data-testid="list-status"]').text()).toBe('showing 2 of 132')

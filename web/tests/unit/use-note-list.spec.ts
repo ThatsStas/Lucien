@@ -88,6 +88,7 @@ describe('useNoteList', () => {
     expect(state.rows.value.map((r) => r.id)).toEqual(['b', 'a'])
     expect(state.total.value).toBe(2)
     expect(state.loading.value).toBe(false)
+    expect(state.showingLine.value).toBe('showing 2 of 2')
   })
 
   it('polls on the interval with the cursor and merges by id, keeping modified desc order', async () => {
