@@ -110,6 +110,9 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
   )
   const backendArgs = ['--config', configPath]
   const backend = spawnLogged(backendBin, backendArgs, path.join(tmp, 'lucien.log'))
+  // Specs that stop/restart the backend (health footer spec) find its pid
+  // here: workers cannot reach the setup process's child handles directly.
+  fs.writeFileSync(path.join(tmp, 'backend.pid'), String(backend.pid ?? 0))
   try {
     await waitForHealth()
   } catch (err) {
@@ -126,6 +129,15 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
   process.env.LUCIEN_E2E_TMP_DIR = tmp
 
   return async () => {
+    // Also trust the pid file: a spec-restarted backend repointed it.
+    const pidFile = path.join(tmp, 'backend.pid')
+    if (fs.existsSync(pidFile)) {
+      try {
+        process.kill(Number(fs.readFileSync(pidFile, 'utf8')), 'SIGTERM')
+      } catch {
+        // already gone
+      }
+    }
     for (const child of [backend, stub]) {
       if (child.exitCode === null && child.signalCode === null) {
         child.kill('SIGTERM')
