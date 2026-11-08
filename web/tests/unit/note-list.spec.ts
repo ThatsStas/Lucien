@@ -109,7 +109,7 @@ describe('ProcessingBadge', () => {
     expect(wrapper.find('[data-testid="processing-badge"]').text()).toBe('queued for tagging')
   })
 
-  it('shows step and status for audio notes', () => {
+  it('shows an honest transcribing word for audio mid-run', () => {
     const wrapper = mountList({
       rows: [
         summary('a', {
@@ -118,7 +118,7 @@ describe('ProcessingBadge', () => {
         }),
       ],
     })
-    expect(wrapper.find('[data-testid="processing-badge"]').text()).toBe('transcribe running')
+    expect(wrapper.find('[data-testid="processing-badge"]').text()).toBe('transcribing')
   })
 
   it('renders no badge once processing is done', () => {
