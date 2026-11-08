@@ -3,10 +3,12 @@
 // vue-router is mocked so navigation assertions stay cheap.
 
 import { mount } from '@vue/test-utils'
+import { ElOption, ElSelect } from 'element-plus'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { ApiError, type Api } from '@/api/client'
-import type { Note } from '@/api/types'
+import type { Note, Patch, PatchResult } from '@/api/types'
+import { attachAppKeymap } from '@/lib/keymap'
 
 const push = vi.hoisted(() => vi.fn<(to: string) => void>())
 vi.mock('vue-router', () => ({
@@ -43,10 +45,13 @@ function makeNote(over: Partial<Note> = {}): Note {
   }
 }
 
-function makeApi(note: Note | null): Api {
+function makeApi(note: Note | null, patchResult?: PatchResult): Api {
   return {
     getNote: vi.fn<(id: string) => Promise<Note>>(() =>
       note ? Promise.resolve(note) : Promise.reject(new ApiError(404, 'note not found')),
+    ),
+    patchNote: vi.fn<(id: string, p: Patch) => Promise<PatchResult>>(() =>
+      Promise.resolve(patchResult ?? { kind: 'ok', note: note ?? makeNote() }),
     ),
   } as unknown as Api
 }
@@ -147,5 +152,79 @@ describe('NoteView', () => {
     } as unknown as Api
     const wrapper = await mountView(api)
     expect(wrapper.get('[data-testid="note-error"]').text()).toContain('index corrupt')
+  })
+
+  it('offers exactly the six states in the header select, current one selected', async () => {
+    const wrapper = await mountView(makeApi(makeNote()))
+    const select = wrapper.findComponent(ElSelect)
+    expect(select.exists()).toBe(true)
+    expect(select.props('modelValue')).toBe('inbox')
+    expect(wrapper.findAllComponents(ElOption).map((o) => o.props('value'))).toEqual([
+      'inbox',
+      'todo',
+      'in_progress',
+      'done',
+      'someday',
+      'archived',
+    ])
+  })
+
+  it('patches with base_modified verbatim as last read', async () => {
+    const api = makeApi(makeNote(), {
+      kind: 'ok',
+      note: makeNote({ state: 'todo', modified: '2026-11-07T13:00:00Z' }),
+    })
+    const wrapper = await mountView(api)
+    wrapper.findComponent(ElSelect).vm.$emit('change', 'todo')
+    await new Promise((r) => setTimeout(r, 0))
+    expect(api.patchNote).toHaveBeenCalledWith('01ABC', {
+      base_modified: '2026-11-07T12:00:00Z',
+      state: 'todo',
+    })
+  })
+
+  it('replaces the local note from the response and reuses its modified next time', async () => {
+    const api = makeApi(makeNote(), {
+      kind: 'ok',
+      note: makeNote({ state: 'todo', modified: '2026-11-07T13:00:00Z' }),
+    })
+    const wrapper = await mountView(api)
+    wrapper.findComponent(ElSelect).vm.$emit('change', 'todo')
+    await new Promise((r) => setTimeout(r, 0))
+    expect(wrapper.get('[data-testid="note-modified"]').text()).toBe('2026-11-07T13:00:00Z')
+    expect(wrapper.findComponent(ElSelect).props('modelValue')).toBe('todo')
+
+    wrapper.findComponent(ElSelect).vm.$emit('change', 'done')
+    await new Promise((r) => setTimeout(r, 0))
+    expect(api.patchNote).toHaveBeenLastCalledWith('01ABC', {
+      base_modified: '2026-11-07T13:00:00Z',
+      state: 'done',
+    })
+  })
+
+  it('routes a conflict to a placeholder with the server modified and a reload', async () => {
+    const api = makeApi(makeNote(), {
+      kind: 'conflict',
+      note: makeNote({ state: 'done', modified: '2026-11-07T14:00:00Z' }),
+    })
+    const wrapper = await mountView(api)
+    wrapper.findComponent(ElSelect).vm.$emit('change', 'todo')
+    await new Promise((r) => setTimeout(r, 0))
+    const box = wrapper.get('[data-testid="conflict-placeholder"]')
+    expect(box.text()).toContain('2026-11-07T14:00:00Z')
+
+    await box.get('[data-testid="conflict-reload"]').trigger('click')
+    await new Promise((r) => setTimeout(r, 0))
+    expect(api.getNote).toHaveBeenCalledTimes(2)
+    expect(wrapper.find('[data-testid="conflict-placeholder"]').exists()).toBe(false)
+  })
+
+  it('Esc returns to the list', async () => {
+    const detach = attachAppKeymap()
+    const wrapper = await mountView(makeApi(makeNote()))
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+    expect(push).toHaveBeenCalledWith('/')
+    wrapper.unmount()
+    detach()
   })
 })

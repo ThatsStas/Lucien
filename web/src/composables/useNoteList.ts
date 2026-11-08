@@ -21,6 +21,11 @@ export interface UseNoteListOptions {
 
 const DEFAULT_POLL_MS = 3_000
 
+// Card web-3 acceptance 4: Enter into a note and Esc back remounts the list;
+// the selection rides through in module state, keyed by id so a row deleted
+// server-side cannot haunt the index.
+const selectionMemory: { id: string | null } = { id: null }
+
 export function useNoteList(api: Api, opts: UseNoteListOptions = {}) {
   const pollMs = opts.pollMs ?? DEFAULT_POLL_MS
   const getLimit = opts.getLimit ?? (() => 50)
@@ -37,10 +42,17 @@ export function useNoteList(api: Api, opts: UseNoteListOptions = {}) {
   const filters = reactive<{ state: State | '' }>({ state: '' })
 
   let cursor: string | null = null
+  // A single restore attempt per instance: only the first fetch after mount
+  // honors the remembered id (a filter change still resets to 0, section 9).
+  let pendingRestore = selectionMemory.id !== null
   // Every full fetch starts a new generation; responses from older
   // generations (a filter changed mid-flight) are dropped rather than
   // merging stale rows into the new filter's list.
   let generation = 0
+
+  function rememberSelection(): void {
+    selectionMemory.id = rows.value[selected.value]?.id ?? null
+  }
 
   function params(): ListParams {
     const p: ListParams = { limit: getLimit() }
@@ -79,7 +91,13 @@ export function useNoteList(api: Api, opts: UseNoteListOptions = {}) {
       total.value = res.total
       offline.value = false
       cursor = maxModified(null, res.notes)
+      if (pendingRestore) {
+        pendingRestore = false
+        const i = rows.value.findIndex((r) => r.id === selectionMemory.id)
+        selected.value = i >= 0 ? i : clamp(selected.value)
+      }
       selected.value = clamp(selected.value)
+      rememberSelection()
     } catch {
       if (gen !== generation) return
       offline.value = true
@@ -124,6 +142,11 @@ export function useNoteList(api: Api, opts: UseNoteListOptions = {}) {
   })
   onUnmounted(() => scheduler.clearInterval(handle))
 
+  const moveAndRemember = (delta: number): void => {
+    selected.value = clamp(selected.value + delta)
+    rememberSelection()
+  }
+
   return {
     rows,
     total,
@@ -134,14 +157,23 @@ export function useNoteList(api: Api, opts: UseNoteListOptions = {}) {
     filters,
     selectIndex: (i: number) => {
       selected.value = clamp(i)
+      rememberSelection()
     },
-    moveDown: () => {
-      selected.value = clamp(selected.value + 1)
+    moveDown: () => moveAndRemember(1),
+    moveUp: () => moveAndRemember(-1),
+    // Delete lands the row removal locally; the poll will never resurrect it
+    // (deleted notes leave the server's cursor window entirely).
+    removeRow: (id: string) => {
+      if (!rows.value.some((r) => r.id === id)) return
+      rows.value = rows.value.filter((r) => r.id !== id)
+      total.value = Math.max(0, total.value - 1)
+      selected.value = clamp(selected.value)
+      rememberSelection()
     },
-    moveUp: () => {
-      selected.value = clamp(selected.value - 1)
+    refresh: () => {
+      pendingRestore = false
+      return fetchFull()
     },
-    refresh: fetchFull,
     // Card web-2 acceptance pins the literal `showing 3 of 3`: the line
     // shows whenever there are rows, not only when more exist than shown.
     showingLine: computed(() =>

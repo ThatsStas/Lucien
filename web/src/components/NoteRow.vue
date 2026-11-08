@@ -12,7 +12,12 @@ defineProps<{
   selected: boolean
 }>()
 
-const emit = defineEmits<{ select: [] }>()
+const emit = defineEmits<{ select: []; open: [] }>()
+
+function activate(): void {
+  emit('select')
+  emit('open')
+}
 </script>
 
 <template>
@@ -21,7 +26,7 @@ const emit = defineEmits<{ select: [] }>()
     role="listitem"
     :aria-current="selected ? 'true' : undefined"
     class="note-row"
-    @click="emit('select')"
+    @click="activate"
   >
     <span class="row-state">{{ note.state }}</span>
     <span class="row-tags">

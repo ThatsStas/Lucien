@@ -58,6 +58,12 @@ describe('NoteList', () => {
     expect(wrapper.emitted('select')).toEqual([[1]])
   })
 
+  it('emits open on the same click: the click target for the Enter key', async () => {
+    const wrapper = mountList()
+    await wrapper.find('[data-testid="note-row-a"]').trigger('click')
+    expect(wrapper.emitted('open')).toEqual([[1]])
+  })
+
   it('shows state, tags, source kind and the server snippet in the row', () => {
     const wrapper = mountList({
       rows: [

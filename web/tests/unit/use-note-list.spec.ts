@@ -212,4 +212,53 @@ describe('useNoteList', () => {
     await settle()
     expect(state.showingLine.value).toBe('showing 3 of 132')
   })
+
+  // Card web-3 acceptance 4: Enter into a note and Esc back must land on the
+  // same row. The router remounts the list, so the selection survives in
+  // module state keyed by note id (cleared once the note is gone).
+  it('restores selection by id after a remount', async () => {
+    const page: ListResult = {
+      notes: [summary('c', '2026-11-08T10:02:00Z'), summary('b', '2026-11-08T10:01:00Z'), summary('a', '2026-11-08T10:00:00Z')],
+      total: 3,
+    }
+    const { api } = stubApi(page, page)
+    const first = mountList(api)
+    await settle()
+    first.state.selectIndex(1) // 'b'
+    first.wrapper.unmount()
+
+    const second = mountList(api)
+    await settle()
+    expect(second.state.rows.value[second.state.selected.value]?.id).toBe('b')
+  })
+
+  it('drops the remembered selection when that note no longer loads', async () => {
+    const { api } = stubApi(
+      { notes: [summary('gone', '2026-11-08T10:01:00Z')], total: 1 },
+      { notes: [summary('fresh', '2026-11-08T10:02:00Z')], total: 1 },
+    )
+    const first = mountList(api)
+    await settle()
+    first.state.selectIndex(0) // 'gone'
+    first.wrapper.unmount()
+
+    const second = mountList(api)
+    await settle()
+    expect(second.state.selected.value).toBe(0)
+    expect(second.state.rows.value[0]?.id).toBe('fresh')
+  })
+
+  it('removeRow drops a row locally so delete does not wait for the poll', async () => {
+    const { api } = stubApi({
+      notes: [summary('b', '2026-11-08T10:01:00Z'), summary('a', '2026-11-08T10:00:00Z')],
+      total: 2,
+    })
+    const { state } = mountList(api)
+    await settle()
+    state.removeRow('b')
+    expect(state.rows.value.map((r) => r.id)).toEqual(['a'])
+    expect(state.total.value).toBe(1)
+    // The deleted note can no longer hold the selection.
+    expect(state.selected.value).toBe(0)
+  })
 })

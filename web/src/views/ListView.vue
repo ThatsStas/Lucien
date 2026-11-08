@@ -4,6 +4,7 @@
 // authenticated call the 401 -> toast -> /settings e2e rule exercises.
 import { ElButton } from 'element-plus'
 import { ref } from 'vue'
+import { useRouter } from 'vue-router'
 
 import NewNoteDialog from '@/components/NewNoteDialog.vue'
 import NoteList from '@/components/NoteList.vue'
@@ -16,6 +17,7 @@ import { useSettingsStore } from '@/stores/settings'
 
 const settings = useSettingsStore()
 const list = useNoteList(useAppApi(), { getLimit: () => settings.pageSize })
+const router = useRouter()
 
 const dialogVisible = ref(false)
 const search = ref<InstanceType<typeof SearchInput> | null>(null)
@@ -25,12 +27,19 @@ function focusSearch(): void {
   input?.focus()
 }
 
+// Enter and row-click share one path: Enter has a click target (section 7).
+function openIndex(index: number): void {
+  const row = list.rows.value[index]
+  if (row) router.push(`/n/${row.id}`)
+}
+
 // j/k clamp at the ends inside the composable. Escape here is the second
 // press of the search clear gesture: the first one blurred the input and
 // stopped at its own handler (FRONTEND-DESIGN.md 7).
 useKeys({
   j: list.moveDown,
   k: list.moveUp,
+  Enter: () => openIndex(list.selected.value),
   n: () => {
     dialogVisible.value = true
   },
@@ -65,6 +74,7 @@ useKeys({
       :offline="list.offline.value"
       :showing-line="list.showingLine.value"
       @select="list.selectIndex"
+      @open="openIndex"
     />
     <NewNoteDialog v-model:visible="dialogVisible" @created="list.refresh()" />
   </main>

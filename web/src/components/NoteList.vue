@@ -12,7 +12,7 @@ defineProps<{
   showingLine: string
 }>()
 
-const emit = defineEmits<{ select: [index: number] }>()
+const emit = defineEmits<{ select: [index: number]; open: [index: number] }>()
 </script>
 
 <template>
@@ -25,6 +25,7 @@ const emit = defineEmits<{ select: [index: number] }>()
         :note="row"
         :selected="index === selectedIndex"
         @select="emit('select', index)"
+        @open="emit('open', index)"
       />
       <p v-if="!rows.length && !loading">no notes</p>
     </div>

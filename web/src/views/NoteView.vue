@@ -6,11 +6,14 @@
 
 import { onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { ElButton } from 'element-plus'
+import { ElButton, ElMessage, ElOption, ElSelect } from 'element-plus'
 
 import { useAppApi } from '@/api/app-api'
 import { ApiError, type Api } from '@/api/client'
-import type { Note } from '@/api/types'
+import type { Note, State } from '@/api/types'
+import { useKeys } from '@/lib/keymap'
+
+const STATES: State[] = ['inbox', 'todo', 'in_progress', 'done', 'someday', 'archived']
 
 const props = defineProps<{ id: string; api?: Api }>()
 const api = props.api ?? useAppApi()
@@ -19,12 +22,21 @@ const router = useRouter()
 const note = ref<Note | null>(null)
 const notFound = ref(false)
 const error = ref<string | null>(null)
+const saving = ref(false)
+// Select bound to a draft: on a failed patch the draft snaps back to the
+// server truth held in note, visibly correcting the control.
+const stateDraft = ref<State>('inbox')
+// The server note that refused our patch; card 4 replaces this placeholder
+// with the conflict dialog (TODO(card4)).
+const conflict = ref<Note | null>(null)
 
 async function load(): Promise<void> {
   notFound.value = false
   error.value = null
+  conflict.value = null
   try {
     note.value = await api.getNote(props.id)
+    if (note.value) stateDraft.value = note.value.state
   } catch (err) {
     note.value = null
     // The binary answers 400 for malformed ids and 404 for unknown ones;
@@ -39,6 +51,34 @@ async function load(): Promise<void> {
   }
 }
 
+// base_modified is the last modified we read, kept as the unparsed string
+// (FRONTEND-DESIGN.md 5): on ok the response is the only trusted source for
+// the new modified.
+async function changeState(next: State): Promise<void> {
+  if (!note.value) return
+  if (next === note.value.state) return
+  saving.value = true
+  try {
+    const result = await api.patchNote(props.id, {
+      base_modified: note.value.modified,
+      state: next,
+    })
+    if (result.kind === 'ok') {
+      note.value = result.note
+      stateDraft.value = result.note.state
+      conflict.value = null
+    } else {
+      conflict.value = result.note
+      stateDraft.value = note.value.state
+    }
+  } catch {
+    ElMessage({ type: 'error', message: 'state change failed' })
+    stateDraft.value = note.value.state
+  } finally {
+    saving.value = false
+  }
+}
+
 onMounted(load)
 // The router reuses this instance when only the id param changes; refetch
 // rather than show the previous note.
@@ -47,6 +87,7 @@ watch(() => props.id, load)
 function back(): void {
   router.push('/')
 }
+useKeys({ Escape: back })
 </script>
 
 <template>
@@ -64,12 +105,28 @@ function back(): void {
     <template v-else-if="note">
       <header class="note-header">
         <span data-testid="note-id" class="note-id">{{ note.id }}</span>
-        <span data-testid="note-state" class="note-state">{{ note.state }}</span>
+        <ElSelect
+          v-model="stateDraft"
+          data-testid="state-select"
+          :disabled="saving"
+          @change="changeState"
+        >
+          <ElOption v-for="s in STATES" :key="s" :label="s" :value="s" />
+        </ElSelect>
         <span data-testid="note-source" class="note-source">{{ note.source.kind }}</span>
         <time data-testid="note-created" :datetime="note.created">{{ note.created }}</time>
         <time data-testid="note-modified" :datetime="note.modified">{{ note.modified }}</time>
         <ElButton data-testid="reload-button" size="small" @click="load">Reload</ElButton>
+        <ElButton data-testid="back-button" size="small" @click="back">Back</ElButton>
       </header>
+      <section v-if="conflict" data-testid="conflict-placeholder" class="panel">
+        <p>
+          someone else changed this note (server modified
+          {{ conflict.modified }}). TODO(card4) replaces this with the conflict
+          dialog.
+        </p>
+        <ElButton data-testid="conflict-reload" @click="load">Reload</ElButton>
+      </section>
       <section data-testid="processing-block" class="processing">
         <span data-testid="proc-step">{{ note.processing.step }}</span>
         <span data-testid="proc-status">{{ note.processing.status }}</span>
