@@ -365,3 +365,41 @@ func TestReindexLoggedAtInfo(t *testing.T) {
 		t.Errorf("reindex must log one INFO receipt line:\n%s", strings.Join(lines, "\n"))
 	}
 }
+
+// TestTagsEndpoint covers GET /v1/tags (user-requested addition beyond the
+// cards): auth-gated like every /v1/ route, empty index answers
+// {"tags":[]}, and the body carries distinct tags with per-note counts,
+// count desc then tag asc.
+func TestTagsEndpoint(t *testing.T) {
+	e := newEnv(t, slog.LevelInfo)
+
+	code, body := e.req(t, "GET", "/v1/tags", "", "", false)
+	if code != http.StatusUnauthorized {
+		t.Fatalf("unauthed tags: want 401, got %d %s", code, body)
+	}
+	code, body = e.req(t, "GET", "/v1/tags", "", "", true)
+	if code != http.StatusOK || !strings.Contains(body, `"tags":[]`) {
+		t.Fatalf("empty tags: want 200 with tags:[], got %d %s", code, body)
+	}
+
+	create := func(text, tags string) {
+		t.Helper()
+		code, body := e.req(t, "POST", "/v1/notes",
+			`{"text":"`+text+`","tags":`+tags+`}`, "application/json", true)
+		if code != http.StatusCreated {
+			t.Fatalf("create %q: %d %s", text, code, body)
+		}
+	}
+	create("kernel oops", `["kernel","idea"]`)
+	create("kernel panic again", `["kernel"]`)
+	create("no tags here", `[]`)
+
+	code, body = e.req(t, "GET", "/v1/tags", "", "", true)
+	if code != http.StatusOK {
+		t.Fatalf("tags: %d %s", code, body)
+	}
+	want := `"tags":[{"tag":"kernel","count":2},{"tag":"idea","count":1}]`
+	if !strings.Contains(body, want) {
+		t.Fatalf("tags body must contain\n %s\ngot %s", want, body)
+	}
+}

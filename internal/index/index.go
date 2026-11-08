@@ -486,3 +486,31 @@ func escapeLike(s string) string {
 	r := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
 	return r.Replace(s)
 }
+
+// TagCount is one distinct tag and how many notes carry it.
+type TagCount struct {
+	Tag   string `json:"tag"`
+	Count int    `json:"count"`
+}
+
+// Tags lists distinct tags with per-note counts, count desc then tag asc
+// for a stable order. Derived from the index only; deleted notes are
+// already removed from the tags table by Remove.
+func (x *Index) Tags() ([]TagCount, error) {
+	rows, err := x.db.Query(
+		`SELECT tag, COUNT(DISTINCT note_id) FROM tags
+		 GROUP BY tag ORDER BY COUNT(DISTINCT note_id) DESC, tag ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []TagCount{} // never nil: the API serializes [] not null
+	for rows.Next() {
+		var tc TagCount
+		if err := rows.Scan(&tc.Tag, &tc.Count); err != nil {
+			return nil, err
+		}
+		out = append(out, tc)
+	}
+	return out, rows.Err()
+}

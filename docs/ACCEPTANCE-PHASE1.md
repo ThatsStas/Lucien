@@ -180,3 +180,14 @@ Two pieces of work landed after §1–5, both TDD (RED → GREEN → full suite
   already `filepath.Base`-safe. Pinned by canary regressions in the
   store seam (`TestMalformedIDsCannotEscapeNotesDir`) and the system
   seam (`TestTraversalIDCannotEscapeNotesDir`).
+- **`GET /v1/tags`** (this commit). User-requested addition beyond the
+  cards: returns every distinct tag with the number of notes carrying
+  it — `{"tags":[{"tag":"kernel","count":2}, …]}`, ordered count desc
+  then tag asc — read straight from the normalized `tags` table in the
+  index (a pure derived-cache read, no note-file IO), so it reflects the
+  live index and drops deleted notes for free. Auth-gated like every
+  other `/v1/` route (missing/bad bearer → 401); empty index answers
+  `{"tags":[]}`, never `null`. Not in `docs/DESIGN.md` §5 (written
+  before this request); pinned by `TestTagsAggregation` (index seam)
+  and `TestTagsEndpoint` (API seam). The web UI does not consume it
+  yet — a follow-up can wire it into the list filter chips.

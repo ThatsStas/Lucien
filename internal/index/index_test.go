@@ -534,3 +534,39 @@ func TestEarliestRetry(t *testing.T) {
 		t.Fatalf("want nil, got %v (%v)", got, err)
 	}
 }
+
+// TestTagsAggregation pins the data side of GET /v1/tags: distinct tag to
+// number of indexed notes carrying it, count desc then tag asc; Remove
+// drops a note's contribution (the index is the only source, no file IO).
+func TestTagsAggregation(t *testing.T) {
+	x := openIndex(t)
+	a := mkNote("01A", 0, "alpha")
+	a.Tags = []notestore.Tag{{Name: "kernel", By: "agent"}, {Name: "idea", By: "human"}}
+	b := mkNote("01B", 1, "beta")
+	b.Tags = []notestore.Tag{{Name: "kernel", By: "human"}}
+	c := mkNote("01C", 2, "gamma") // no tags at all
+	for _, n := range []*notestore.Note{a, b, c} {
+		if err := x.Upsert(n); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := x.Tags()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []TagCount{{Tag: "kernel", Count: 2}, {Tag: "idea", Count: 1}}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("want %+v, got %+v", want, got)
+	}
+	if err := x.Remove("01A"); err != nil {
+		t.Fatal(err)
+	}
+	got, err = x.Tags()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want = []TagCount{{Tag: "kernel", Count: 1}}
+	if len(got) != 1 || got[0] != want[0] {
+		t.Fatalf("after remove want %+v, got %+v", want, got)
+	}
+}

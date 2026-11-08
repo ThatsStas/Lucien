@@ -114,6 +114,8 @@ curl -s -X POST $B/v1/notes -H "Authorization: Bearer $T" \
   -F file=@tests/fixtures/sample.m4a
 # watch the pipeline: processing.step/status, then a transcript entry
 curl -s $B/v1/notes/<id> -H "Authorization: Bearer $T" | jq .processing
+# every distinct tag with a per-note count (for filter chips / tag pickers)
+curl -s $B/v1/tags -H "Authorization: Bearer $T" | jq .tags
 ```
 
 Against a stub instead of a real whisper, boot `go run ./tests/stubs/stub_whisper

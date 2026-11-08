@@ -63,6 +63,8 @@ func (s *Server) Handler() http.Handler {
 			s.handleCreate(w, r)
 		case r.Method == "GET" && r.URL.Path == "/v1/notes":
 			s.handleList(w, r)
+		case r.Method == "GET" && r.URL.Path == "/v1/tags":
+			s.handleTags(w, r)
 		case r.Method == "POST" && strings.HasSuffix(r.URL.Path, "/append") && strings.HasPrefix(r.URL.Path, "/v1/notes/"):
 			s.handleAppend(w, r, strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/v1/notes/"), "/append"))
 		case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/v1/notes/"):
@@ -380,6 +382,19 @@ func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
 }
 
 // GET /v1/notes/:id (DESIGN.md 5.5). Truth comes from the file.
+// handleTags answers GET /v1/tags (user-requested addition beyond the
+// cards): distinct tags with per-note counts for filter chips and tag
+// pickers. Pure index read; empty index answers {"tags":[]}.
+func (s *Server) handleTags(w http.ResponseWriter, r *http.Request) {
+	tags, err := s.idx.Tags()
+	if err != nil {
+		s.log.Error("tags query", "err", err)
+		jsonErr(w, http.StatusInternalServerError, "tags query failed")
+		return
+	}
+	jsonOut(w, http.StatusOK, map[string][]index.TagCount{"tags": tags})
+}
+
 func (s *Server) handleGet(w http.ResponseWriter, r *http.Request, id string) {
 	n, err := s.store.Read(id)
 	if err != nil {
