@@ -36,6 +36,13 @@ function openIndex(index: number): void {
   if (row) router.push(`/n/${row.id}`)
 }
 
+// e opens the editor for the selected note: same navigation, plus the flag
+// NoteView reads to start in edit mode (card web-4 slice 1).
+function editIndex(index: number): void {
+  const row = list.rows.value[index]
+  if (row) router.push(`/n/${row.id}?edit=1`)
+}
+
 // d opens the shared confirm dialog for the selected row; the row disappears
 // locally on success — the poll never resurrects a deleted note. A 404 is
 // the same local removal with an info toast (card web-3 slice 3).
@@ -78,6 +85,7 @@ useKeys({
     dialogVisible.value = true
   },
   d: askDelete,
+  e: () => editIndex(list.selected.value),
   '/': focusSearch,
   Escape: () => {
     if (list.q.value) list.q.value = ''

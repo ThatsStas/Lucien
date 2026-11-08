@@ -5,12 +5,19 @@
 // without a network.
 
 import { onMounted, ref, watch } from 'vue'
-import { useRouter } from 'vue-router'
-import { ElButton, ElMessage, ElOption, ElSelect } from 'element-plus'
+import { useRoute, useRouter } from 'vue-router'
+import {
+  ElButton,
+  ElInput,
+  ElInputNumber,
+  ElMessage,
+  ElOption,
+  ElSelect,
+} from 'element-plus'
 
 import { useAppApi } from '@/api/app-api'
 import { ApiError, type Api } from '@/api/client'
-import type { Note, State } from '@/api/types'
+import type { Note, State, Tag } from '@/api/types'
 import { useKeys } from '@/lib/keymap'
 import ConfirmDeleteDialog from '@/components/ConfirmDeleteDialog.vue'
 
@@ -19,6 +26,7 @@ const STATES: State[] = ['inbox', 'todo', 'in_progress', 'done', 'someday', 'arc
 const props = defineProps<{ id: string; api?: Api }>()
 const api = props.api ?? useAppApi()
 const router = useRouter()
+const route = useRoute()
 
 const note = ref<Note | null>(null)
 const notFound = ref(false)
@@ -80,15 +88,97 @@ async function changeState(next: State): Promise<void> {
   }
 }
 
-onMounted(load)
 // The router reuses this instance when only the id param changes; refetch
-// rather than show the previous note.
-watch(() => props.id, load)
+// rather than show the previous note, and drop any stale draft.
+watch(
+  () => props.id,
+  () => {
+    editing.value = false
+    load()
+  },
+)
 
 function back(): void {
   router.push('/')
 }
-useKeys({ Escape: back })
+
+// Edit mode (card web-4 slice 1). Drafts live only here: open seeds them
+// from the note, save sends entry_edit + priority + tags in one patch with
+// base_modified taken verbatim from the note's modified. The list's `e` key
+// arrives as /n/<id>?edit=1.
+const editing = ref(false)
+const entryId = ref(0)
+const entryText = ref('')
+const priorityDraft = ref(0)
+const tagsDraft = ref<Tag[]>([])
+
+async function loadAndMaybeEdit(): Promise<void> {
+  await load()
+  editing.value = false
+  if (route.query.edit && note.value) openEdit()
+}
+onMounted(loadAndMaybeEdit)
+
+watch(entryId, (id) => {
+  const entry = note.value?.entries.find((e) => e.id === id)
+  if (entry) entryText.value = entry.text
+})
+
+function openEdit(): void {
+  if (!note.value) return
+  const first = note.value.entries[0]
+  entryId.value = first?.id ?? 0
+  entryText.value = first?.text ?? ''
+  priorityDraft.value = note.value.priority
+  tagsDraft.value = note.value.tags.map((t) => ({ ...t }))
+  editing.value = true
+}
+
+function closeEdit(): void {
+  editing.value = false
+}
+
+function toggleEdit(): void {
+  if (editing.value) closeEdit()
+  else openEdit()
+}
+
+async function saveEdit(): Promise<void> {
+  if (!note.value || saving.value) return
+  saving.value = true
+  try {
+    const result = await api.patchNote(props.id, {
+      base_modified: note.value.modified,
+      entry_edit: { id: entryId.value, text: entryText.value },
+      priority: priorityDraft.value,
+      tags: tagsDraft.value,
+    })
+    if (result.kind === 'ok') {
+      note.value = result.note
+      stateDraft.value = result.note.state
+      conflict.value = null
+      editing.value = false
+      ElMessage({ message: 'saved', type: 'success' })
+    } else {
+      // Keep the draft on screen; slice 3 swaps the placeholder for the
+      // merge dialog.
+      conflict.value = result.note
+    }
+  } catch {
+    ElMessage({ message: 'save failed', type: 'error' })
+  } finally {
+    saving.value = false
+  }
+}
+
+useKeys({
+  Escape: () => {
+    // First Esc closes the editor; only a second one leaves the note.
+    if (editing.value) closeEdit()
+    else back()
+  },
+  e: toggleEdit,
+})
 
 // Delete (card web-3 slice 3): confirm dialog first, then deleteNote. A 404
 // means someone already deleted it — same outcome, quieter toast. Other
@@ -140,6 +230,9 @@ async function confirmDelete(): Promise<void> {
         <time data-testid="note-modified" :datetime="note.modified">{{ note.modified }}</time>
         <ElButton data-testid="reload-button" size="small" @click="load">Reload</ElButton>
         <ElButton data-testid="back-button" size="small" @click="back">Back</ElButton>
+        <ElButton data-testid="edit-toggle" size="small" @click="toggleEdit">
+          {{ editing ? 'Close editor' : 'Edit' }}
+        </ElButton>
         <ElButton data-testid="delete-button" size="small" type="danger" @click="deleteVisible = true">
           Delete
         </ElButton>
@@ -161,6 +254,33 @@ async function confirmDelete(): Promise<void> {
         <pre v-if="note.processing.last_error" data-testid="proc-error" class="pre-wrap">
 {{ note.processing.last_error }}</pre
         >
+      </section>
+      <section v-if="editing" data-testid="edit-form" class="edit-form">
+        <ElSelect v-model="entryId" data-testid="entry-select" class="entry-picker">
+          <ElOption
+            v-for="entry in note.entries"
+            :key="entry.id"
+            :label="`${entry.id} ${entry.kind}`"
+            :value="entry.id"
+          />
+        </ElSelect>
+        <ElInput
+          v-model="entryText"
+          data-testid="entry-text"
+          type="textarea"
+          :rows="5"
+          placeholder="Entry text"
+        />
+        <div class="edit-row">
+          <span class="edit-label">Priority</span>
+          <ElInputNumber v-model="priorityDraft" :min="0" :max="3" data-testid="priority-input" />
+        </div>
+        <div class="edit-actions">
+          <ElButton data-testid="entry-save" type="primary" :disabled="saving" @click="saveEdit">
+            {{ saving ? 'Saving…' : 'Save' }}
+          </ElButton>
+          <ElButton data-testid="edit-cancel" @click="closeEdit">Cancel</ElButton>
+        </div>
       </section>
       <ol class="timeline">
         <li v-for="entry in note.entries" :key="entry.id" :data-testid="`entry-${entry.id}`">
@@ -251,5 +371,30 @@ async function confirmDelete(): Promise<void> {
 }
 .entry-text {
   color: var(--el-text-color-primary);
+}
+.edit-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin: 0.5rem 0;
+  padding: 0.75rem;
+  border: 1px solid var(--el-border-color);
+  border-radius: 6px;
+}
+.edit-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.edit-label {
+  font-size: 0.8rem;
+  color: var(--el-text-color-secondary);
+}
+.edit-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+.entry-picker {
+  max-width: 12rem;
 }
 </style>

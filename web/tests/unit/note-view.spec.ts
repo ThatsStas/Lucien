@@ -2,8 +2,8 @@
 // The Api is injected as a prop so no test touches the network, and
 // vue-router is mocked so navigation assertions stay cheap.
 
-import { mount } from '@vue/test-utils'
-import { ElOption, ElSelect } from 'element-plus'
+import { mount, type VueWrapper } from '@vue/test-utils'
+import { ElInputNumber, ElOption, ElSelect } from 'element-plus'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { ApiError, type Api } from '@/api/client'
@@ -11,8 +11,10 @@ import type { Note, Patch, PatchResult } from '@/api/types'
 import { attachAppKeymap } from '@/lib/keymap'
 
 const push = vi.hoisted(() => vi.fn<(to: string) => void>())
+const routeQuery = vi.hoisted(() => ({ current: {} as Record<string, string> }))
 vi.mock('vue-router', () => ({
   useRouter: () => ({ push }),
+  useRoute: () => ({ query: routeQuery.current }),
 }))
 
 // Toast assertions need the message object, not the rendered DOM: keep every
@@ -271,5 +273,164 @@ describe('NoteView', () => {
       expect.objectContaining({ message: 'deleted 01ABC', type: 'info' }),
     )
     wrapper.unmount()
+  })
+})
+
+// Edit mode (card web-4 slice 1): e or edit-toggle opens the editor; one
+// save ships entry_edit + priority + tags with base_modified held verbatim.
+function textareaValue(wrapper: VueWrapper): string {
+  return (wrapper.get('[data-testid="entry-text"]').element as HTMLTextAreaElement).value
+}
+
+describe('edit mode', () => {
+  beforeEach(() => {
+    push.mockClear()
+    toast.mockClear()
+    routeQuery.current = {}
+  })
+
+  it('edit-toggle opens the editor with the first entry loaded', async () => {
+    const wrapper = await mountView(makeApi(makeNote()))
+    await wrapper.get('[data-testid="edit-toggle"]').trigger('click')
+    expect(wrapper.find('[data-testid="entry-select"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="entry-text"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="priority-input"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="entry-save"]').exists()).toBe(true)
+    // The textarea starts at the selected entry's full text.
+    expect(textareaValue(wrapper)).toBe('first line\nsecond line')
+    wrapper.unmount()
+  })
+
+  it('e opens the editor through the app keymap', async () => {
+    const detach = attachAppKeymap()
+    const wrapper = await mountView(makeApi(makeNote()))
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'e' }))
+    await new Promise((r) => setTimeout(r, 0))
+    expect(wrapper.find('[data-testid="edit-form"]').exists()).toBe(true)
+    wrapper.unmount()
+    detach()
+  })
+
+  it('opens straight in edit mode when the route carries edit=1', async () => {
+    routeQuery.current = { edit: '1' }
+    const wrapper = await mountView(makeApi(makeNote()))
+    expect(wrapper.find('[data-testid="edit-form"]').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('entry-select lists id and kind and loads the chosen entry text', async () => {
+    const wrapper = await mountView(makeApi(makeNote()))
+    await wrapper.get('[data-testid="edit-toggle"]').trigger('click')
+    expect(wrapper.findAllComponents(ElOption).map((o) => o.props('label'))).toEqual([
+      'inbox',
+      'todo',
+      'in_progress',
+      'done',
+      'someday',
+      'archived',
+      '1 text',
+      '2 text',
+    ])
+    // The header state select is the first one; testids land on the inner
+    // input, so drive the component instance, not the element.
+    const entrySelect = wrapper.findAllComponents(ElSelect)[1] as unknown as VueWrapper
+    entrySelect.vm.$emit('update:modelValue', 2)
+    await new Promise((r) => setTimeout(r, 0))
+    expect(textareaValue(wrapper)).toBe('appended')
+    wrapper.unmount()
+  })
+
+  it('save sends one patch with entry_edit, priority, tags and base_modified verbatim', async () => {
+    const saved = makeNote({ modified: '2026-11-07T13:00:00Z', priority: 2 })
+    const api = makeApi(makeNote(), { kind: 'ok', note: saved })
+    const wrapper = await mountView(api)
+    await wrapper.get('[data-testid="edit-toggle"]').trigger('click')
+    await wrapper.get('[data-testid="entry-text"]').setValue('v2 text')
+    wrapper.findAllComponents(ElInputNumber)[0]!.vm.$emit('update:modelValue', 2)
+    await wrapper.get('[data-testid="entry-save"]').trigger('click')
+    await new Promise((r) => setTimeout(r, 0))
+    expect(api.patchNote).toHaveBeenCalledTimes(1)
+    expect(api.patchNote).toHaveBeenCalledWith('01ABC', {
+      base_modified: '2026-11-07T12:00:00Z',
+      entry_edit: { id: 1, text: 'v2 text' },
+      priority: 2,
+      tags: [{ name: 'groceries', by: 'agent' }],
+    })
+    wrapper.unmount()
+  })
+
+  it('ok replaces the note from the response, exits edit mode, toasts saved', async () => {
+    const saved = makeNote({ modified: '2026-11-07T13:00:00Z', priority: 2 })
+    const api = makeApi(makeNote(), { kind: 'ok', note: saved })
+    const wrapper = await mountView(api)
+    await wrapper.get('[data-testid="edit-toggle"]').trigger('click')
+    await wrapper.get('[data-testid="entry-text"]').setValue('v2 text')
+    await wrapper.get('[data-testid="entry-save"]').trigger('click')
+    await new Promise((r) => setTimeout(r, 0))
+    expect(wrapper.find('[data-testid="edit-form"]').exists()).toBe(false)
+    expect(wrapper.get('[data-testid="note-modified"]').text()).toBe('2026-11-07T13:00:00Z')
+    // The timeline renders the server's returned entry, not the local draft.
+    expect(wrapper.get('[data-testid="entry-1"]').text()).toContain('first line')
+    expect(toast).toHaveBeenCalledWith(expect.objectContaining({ message: 'saved' }))
+    wrapper.unmount()
+  })
+
+  it('the next save forwards the modified the response just gave', async () => {
+    const api = makeApi(makeNote(), {
+      kind: 'ok',
+      note: makeNote({ modified: '2026-11-07T13:00:00Z' }),
+    })
+    const wrapper = await mountView(api)
+    await wrapper.get('[data-testid="edit-toggle"]').trigger('click')
+    await wrapper.get('[data-testid="entry-save"]').trigger('click')
+    await new Promise((r) => setTimeout(r, 0))
+    await wrapper.get('[data-testid="edit-toggle"]').trigger('click')
+    await wrapper.get('[data-testid="entry-save"]').trigger('click')
+    await new Promise((r) => setTimeout(r, 0))
+    expect(api.patchNote).toHaveBeenLastCalledWith(
+      '01ABC',
+      expect.objectContaining({ base_modified: '2026-11-07T13:00:00Z' }),
+    )
+    wrapper.unmount()
+  })
+
+  it('a save conflict keeps edit mode open and shows the conflict surface', async () => {
+    const api = makeApi(makeNote(), {
+      kind: 'conflict',
+      note: makeNote({ modified: '2026-11-07T14:00:00Z' }),
+    })
+    const wrapper = await mountView(api)
+    await wrapper.get('[data-testid="edit-toggle"]').trigger('click')
+    await wrapper.get('[data-testid="entry-text"]').setValue('mine')
+    await wrapper.get('[data-testid="entry-save"]').trigger('click')
+    await new Promise((r) => setTimeout(r, 0))
+    expect(wrapper.find('[data-testid="conflict-placeholder"]').exists()).toBe(true)
+    // Draft survives: still editing, still my text in the textarea.
+    expect(wrapper.find('[data-testid="edit-form"]').exists()).toBe(true)
+    expect(textareaValue(wrapper)).toBe('mine')
+    wrapper.unmount()
+  })
+
+  it('cancel drops the draft without a patch', async () => {
+    const api = makeApi(makeNote())
+    const wrapper = await mountView(api)
+    await wrapper.get('[data-testid="edit-toggle"]').trigger('click')
+    await wrapper.get('[data-testid="entry-text"]').setValue('never saved')
+    await wrapper.get('[data-testid="edit-cancel"]').trigger('click')
+    expect(wrapper.find('[data-testid="edit-form"]').exists()).toBe(false)
+    expect(api.patchNote).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('Esc in edit mode closes the editor instead of leaving the note', async () => {
+    const detach = attachAppKeymap()
+    const wrapper = await mountView(makeApi(makeNote()))
+    await wrapper.get('[data-testid="edit-toggle"]').trigger('click')
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+    await new Promise((r) => setTimeout(r, 0))
+    expect(wrapper.find('[data-testid="edit-form"]').exists()).toBe(false)
+    expect(push).not.toHaveBeenCalled()
+    wrapper.unmount()
+    detach()
   })
 })
